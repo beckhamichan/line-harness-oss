@@ -22,6 +22,7 @@ import {
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -1926,6 +1927,125 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
     return c.json({ success: true, data: { type, label: meta.label, emoji: meta.emoji } });
   } catch (err) {
     console.error('POST /api/liff/diagnosis error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// POST /api/liff/route-select — be Navigator 入口Hub（?page=hub）の目的選択
+//   Hub で選んだ目的（interest）に対し、
+//   ① 興味タグ I: を付与（恒久プロファイル・セグメント配信用）
+//   ② ルートタグ R: を付与（tag_added 起動トリガー＝対応ルートが自動 enroll）
+//   ③ metadata.interests（配列）へ追記＋ route_primary / interest_selected_at
+//   ④ ルート別の案内 Push（心電図は診断へ誘導、他は準備中の受け取り案内）
+//   ⑤ { interest, label, nextPage } を返す（心電図のみ nextPage='diagnosis'）
+//   タグ付与は attachTagAndFireSideEffects を使う（tag_added 発火＋tag_change）。
+//   enroll は自前で呼ばない＝ルーティングは R: タグの tag_added に委ねる（設計v1.0）。
+//   /api/liff/ 配下なので認証ミドルウェアは自動スキップ（公開・LIFF用）。
+// ════════════════════════════════════════════════════════════════
+type RouteKey = 'ecg' | 'circ' | 'device' | 'hf' | 'ai' | 'goods' | 'event';
+
+// 固定UUIDは docs/beNavigator_CRM_V1_1_implementation_plan.md §1/§7 と一致させる。
+// iTag/rTag は D1 上のタグ（9-A で作成）。nextPage は心電図のみ診断へ。
+const ROUTE_MAP: Record<RouteKey, { label: string; iTag: string; rTag: string; nextPage: 'diagnosis' | null }> = {
+  ecg: { label: '心電図', iTag: 'f8e2d40b-8ef1-45dc-924b-8dcf81982428', rTag: '4cdecec7-c40d-4fb1-b972-8e530dc60111', nextPage: 'diagnosis' },
+  circ: { label: '循環器', iTag: 'b3545378-3204-4376-bc04-3b26bcaa0904', rTag: 'c17ecb3c-1e3b-45bb-8f9d-cd3e56f78f57', nextPage: null },
+  device: { label: '心臓デバイス／ペースメーカー', iTag: 'bd9db693-5d1f-4327-b68b-1e370c7d9f37', rTag: 'b33180fd-6e12-40ae-aeb4-5db74d785b6f', nextPage: null },
+  hf: { label: '心不全', iTag: 'e8450b35-5139-43f9-8589-01e839b53ee3', rTag: '6db94a31-3e2b-41b2-9d41-85948387cd03', nextPage: null },
+  ai: { label: 'AI活用', iTag: '84facca0-3009-4336-935c-ce4e0520e99c', rTag: 'd0424f6f-4343-455f-af6a-f2a32b7a4b62', nextPage: null },
+  goods: { label: '文房具・便利グッズ', iTag: 'd064e848-8065-4c90-ac85-9aec4c82868b', rTag: '52799965-061a-4710-8e9c-d0cedac02dc8', nextPage: null },
+  event: { label: 'イベント', iTag: '94c4c650-a41d-4c56-9aa6-1c46a3841c59', rTag: '91733e50-e511-4353-96f5-906c54230f95', nextPage: null },
+};
+
+const ROUTE_KEYS = Object.keys(ROUTE_MAP) as RouteKey[];
+
+function isRouteKey(v: unknown): v is RouteKey {
+  return typeof v === 'string' && (ROUTE_KEYS as string[]).includes(v);
+}
+
+function routeIntroMessage(key: RouteKey): string {
+  if (key === 'ecg') {
+    return '「心電図」の航海へようこそ！🚢 さっそく、あなたの航海マップ（60秒診断）から始めましょう。続けて画面のご案内へどうぞ。\n——ベッカミ';
+  }
+  return `「${ROUTE_MAP[key].label}」に興味を持ってくれてありがとう！🚢 いま、あなたにぴったりの航路を準備しています。整い次第、いちばんにご案内しますね。\n——ベッカミ`;
+}
+
+liffRoutes.post('/api/liff/route-select', async (c) => {
+  try {
+    const db = c.env.DB;
+    const body = await c.req.json<{ lineUserId?: string; interest?: string }>();
+
+    const lineUserId = body.lineUserId;
+    const interest = body.interest;
+    if (!lineUserId || !isRouteKey(interest)) {
+      return c.json({ success: false, error: 'lineUserId and valid interest are required' }, 400);
+    }
+
+    const friend = await getFriendByLineUserId(db, lineUserId);
+    if (!friend) {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    const route = ROUTE_MAP[interest];
+    const now = jstNow();
+
+    // ① 興味タグ I:（恒久） ② ルートタグ R:（tag_added 起動）。
+    // attachTagAndFireSideEffects = friend_tags INSERT OR IGNORE ＋ tag_added enroll ＋ tag_change。
+    try {
+      await attachTagAndFireSideEffects(db, friend.id, route.iTag);
+      await attachTagAndFireSideEffects(db, friend.id, route.rTag);
+    } catch (e) {
+      console.error('route-select tag attach error:', e);
+    }
+
+    // ③ metadata 更新（read→parse→merge→UPDATE。diagnosis endpoint と同手順）
+    try {
+      const existingMeta = await db
+        .prepare('SELECT metadata FROM friends WHERE id = ?')
+        .bind(friend.id)
+        .first<{ metadata: string }>();
+      const meta = JSON.parse(existingMeta?.metadata || '{}') as Record<string, unknown>;
+      const interests = Array.isArray(meta.interests) ? (meta.interests as string[]) : [];
+      if (!interests.includes(interest)) interests.push(interest);
+      const merged = {
+        ...meta,
+        interests,
+        route_primary: typeof meta.route_primary === 'string' ? meta.route_primary : interest,
+        interest_selected_at: now,
+      };
+      await db
+        .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+        .bind(JSON.stringify(merged), now, friend.id)
+        .run();
+    } catch (e) {
+      console.error('route-select metadata error:', e);
+    }
+
+    // ④ ルート別の案内 Push（best-effort・messages_log 記録）
+    try {
+      let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+      if (friend.line_account_id) {
+        const acct = await getLineAccountById(db, friend.line_account_id);
+        if (acct?.channel_access_token) accessToken = acct.channel_access_token;
+      }
+      const { LineClient } = await import('@line-crm/line-sdk');
+      const lineClient = new LineClient(accessToken);
+      const text = routeIntroMessage(interest);
+      await lineClient.pushMessage(lineUserId, [{ type: 'text', text }]);
+      await db
+        .prepare(
+          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
+           VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'auto_reply', NULL, ?)`,
+        )
+        .bind(crypto.randomUUID(), friend.id, text, now)
+        .run();
+    } catch (e) {
+      console.error('route-select push error:', e);
+    }
+
+    return c.json({ success: true, data: { interest, label: route.label, nextPage: route.nextPage } });
+  } catch (err) {
+    console.error('POST /api/liff/route-select error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
