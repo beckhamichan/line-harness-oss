@@ -17,6 +17,7 @@
 
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
+import { initDiagnosis } from './diagnosis.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 
 declare const liff: {
@@ -479,6 +480,8 @@ async function main() {
       await initEventBooking('detail');
     } else if (page === 'event-me') {
       await initEventBooking('history');
+    } else if (page === 'diagnosis') {
+      await initDiagnosis();
     } else if (page === 'form') {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');

@@ -17,6 +17,7 @@ import {
   getPoolAccounts,
   getTrackedLinkById,
   getMessageTemplateById,
+  enrollFriendInScenario,
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
@@ -1818,6 +1819,113 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
     return c.json({ success: true });
   } catch (err) {
     console.error('POST /api/liff/send-form-link error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// POST /api/liff/diagnosis — 心電図 学習タイプ診断（航海マップ）の結果保存
+//   LIFF (?page=diagnosis) からクライアント判定済みの type を受け取り、
+//   ① friends.metadata に診断結果を保存
+//   ② タイプ別の結果メッセージを LINE Push（＋messages_log）
+//   ③ 7日間オンボーディングシナリオへ enroll
+//   /api/liff/ 配下なので認証ミドルウェアは自動スキップ（公開・LIFF用）。
+// ════════════════════════════════════════════════════════════════
+const DX_TYPE_KEYS = ['F', 'P', 'V', 'L'] as const;
+type DxTypeKey = (typeof DX_TYPE_KEYS)[number];
+
+// label/emoji はサーバーを信頼できる出所にする（クライアントの値は使わない）
+const DX_TYPE_META: Record<DxTypeKey, { label: string; emoji: string }> = {
+  F: { label: 'コツコツ基礎固めタイプ', emoji: '📚' },
+  P: { label: '検定で結果を出すタイプ', emoji: '🎯' },
+  V: { label: 'パターンで覚えるタイプ', emoji: '🖼' },
+  L: { label: '語れるようになりたいタイプ', emoji: '🧠' },
+};
+
+// 診断直後の結果メッセージ（設計書 §2）
+const DX_RESULT_MESSAGES: Record<DxTypeKey, string> = {
+  F: '航海マップ、できあがりました！🗺️ あなたは——📚 コツコツ基礎固めタイプ。\n焦らず、土台から一歩ずつ。それが一番、遠くまで行ける漕ぎ方です。大丈夫、全員ここからでした。\nまずは無料の心電図クイズアプリとこの公式LINEで、自分のペースで海に慣れていきましょう。\nこれから1週間、あなたのペースで案内しますね。\n——ベッカミ',
+  P: '航海マップ、できあがりました！🗺️ あなたは——🎯 検定で結果を出すタイプ。\n目標に向かって、まっすぐ舵を切れる人。心電図検定・マイスター、狙っていきましょう。\nあなたにはアプリの検定モードと検定チャレンジコースがぴったり。仲間と一緒なら合格はぐっと近づきます（マイスターSランク合格者も在籍！）。\nこれから1週間、結果につながる航路を案内します。\n——ベッカミ',
+  V: '航海マップ、できあがりました！🗺️ あなたは——🖼 パターンで覚えるタイプ。\nたくさんの波形に触れて、目で覚えるのが得意な人。反復こそ最強の武器です。\n心電図クイズアプリを回しつつ、PVC・AFシリーズやアーカイブで“見たことある波形”を増やしていきましょう。\nこれから1週間、パターンが増えていく航海を案内します。\n——ベッカミ',
+  L: '航海マップ、できあがりました！🗺️ あなたは——🧠 語れるようになりたいタイプ。\n「読める」の先、「なぜ？」を語れるところまで行きたい人。beナビが一番大切にしている航路です。\nあなたには臨床推論型の勉強会と、仲間と語り合える会員コミュニティがぴったり。一人の“読める”を、みんなで“語れる”へ。\nこれから1週間、語れるようになる航海を案内します。\n——ベッカミ',
+};
+
+// 7日間オンボーディングシナリオ（trigger=manual・下書き運用。本番化は friend_add へ変更）
+const DX_ONBOARDING_SCENARIO_ID = 'a8c02e28-beb1-4202-ac83-b39401a56e42';
+
+liffRoutes.post('/api/liff/diagnosis', async (c) => {
+  try {
+    const db = c.env.DB;
+    const body = await c.req.json<{
+      lineUserId?: string;
+      type?: string;
+      scores?: Record<string, number>;
+    }>();
+
+    const lineUserId = body.lineUserId;
+    const type = body.type as DxTypeKey;
+    if (!lineUserId || !type || !DX_TYPE_KEYS.includes(type)) {
+      return c.json({ success: false, error: 'lineUserId and valid type are required' }, 400);
+    }
+
+    const friend = await getFriendByLineUserId(db, lineUserId);
+    if (!friend) {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    const meta = DX_TYPE_META[type];
+    const now = jstNow();
+
+    // ① metadata 保存（既存マージ・確定5項目）
+    const existingMeta = await db
+      .prepare('SELECT metadata FROM friends WHERE id = ?')
+      .bind(friend.id)
+      .first<{ metadata: string }>();
+    const merged = {
+      ...JSON.parse(existingMeta?.metadata || '{}'),
+      diagnosis_type: type,
+      diagnosis_label: meta.label,
+      diagnosis_submitted_at: now,
+      diagnosis_scores: body.scores ?? {},
+      diagnosis_emoji: meta.emoji,
+    };
+    await db
+      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+      .bind(JSON.stringify(merged), now, friend.id)
+      .run();
+
+    // ② 結果メッセージ Push（＋messages_log）
+    try {
+      let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+      if (friend.line_account_id) {
+        const acct = await getLineAccountById(db, friend.line_account_id);
+        if (acct?.channel_access_token) accessToken = acct.channel_access_token;
+      }
+      const { LineClient } = await import('@line-crm/line-sdk');
+      const lineClient = new LineClient(accessToken);
+      const text = DX_RESULT_MESSAGES[type];
+      await lineClient.pushMessage(lineUserId, [{ type: 'text', text }]);
+      await db
+        .prepare(
+          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
+           VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'auto_reply', NULL, ?)`,
+        )
+        .bind(crypto.randomUUID(), friend.id, text, now)
+        .run();
+    } catch (e) {
+      console.error('diagnosis push error:', e);
+    }
+
+    // ③ 7日間オンボーディングへ enroll（best-effort・既enrollはnull）
+    try {
+      await enrollFriendInScenario(db, friend.id, DX_ONBOARDING_SCENARIO_ID);
+    } catch (e) {
+      console.error('diagnosis enroll error:', e);
+    }
+
+    return c.json({ success: true, data: { type, label: meta.label, emoji: meta.emoji } });
+  } catch (err) {
+    console.error('POST /api/liff/diagnosis error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
