@@ -17,6 +17,43 @@ import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
 
 /**
+ * 心電図 学習タイプ診断（航海マップ）の F/P/V/L 別 差し込み文。
+ * 7日間オンボーディングの Day3 / Day5 で `{{type_tip:day3}}` / `{{type_tip:day5}}`
+ * として展開し、friend.metadata.diagnosis_type を鍵に1文を選ぶ（設計書 §5.1/§5.2）。
+ * 文面はサーバーを信頼できる出所にする（クライアント値は使わない）。
+ */
+const DIAGNOSIS_TYPE_TIPS: Record<'day3' | 'day5', Record<'F' | 'P' | 'V' | 'L', string>> = {
+  day3: {
+    F: 'いいんです、最初は答えを見ながらで。大事なのは「P波が消える＋RR不整」という土台の特徴を、自分の言葉で言えること。一個ずつ、確実に。あなたのペースで積んでいきましょう。',
+    P: '検定本番では、これを“数秒”で見抜けるかが勝負。AFは頻出中の頻出です。スピード判読の感覚、ここから磨いていきましょう。',
+    V: 'この「P波が消えてギザギザ＋バラバラ」の見た目、ぜひ目に焼き付けて。AFは一度パターンを掴むと、ひと目で分かるようになります。',
+    L: 'ポイントは“なぜRRがバラバラになるのか”。心房が無秩序に興奮し、房室結節への伝導もランダムになる——だからRR不整。ここまで言えたら、もう“語れる”側です。',
+  },
+  day5: {
+    F: '📚 コツコツタイプのあなたには、週5回の“コツコツ勉強会”と、何度でも見返せるアーカイブがぴったり。基礎から順に、置いていかれずに積めます。',
+    P: '🎯 検定タイプのあなたには、検定チャレンジコースとスピード判読の会。1級・マイスターを本気で狙う仲間が、ここで一気に駆け上がっています。',
+    V: '🖼 パターンタイプのあなたには、判読会シリーズとPVC・AFシリーズ。良質な波形を浴びるほど、「見た瞬間に分かる」が増えていきます。',
+    L: '🧠 語れるタイプのあなたには、臨床推論型の勉強会と、Discordでの語り合い。「なぜ？」を仲間とぶつけ合える、まさにあなたのための場所です。',
+  },
+};
+
+// 診断未回答（diagnosis_type が無い／不正）の友だちでも文章が破綻しないよう中立文を返す。
+const DIAGNOSIS_TYPE_TIP_FALLBACK: Record<'day3' | 'day5', string> = {
+  day3: 'どんな読み方でも大丈夫。一緒に少しずつ波を読めるようになっていきましょう。',
+  day5: '週5回の勉強会も、見放題のアーカイブも、Discordでの語り合いも——あなたのペースで楽しめる場所が待っています。',
+};
+
+function resolveTypeTip(day: 'day3' | 'day5', diagnosisType: unknown): string {
+  if (
+    typeof diagnosisType === 'string' &&
+    (diagnosisType === 'F' || diagnosisType === 'P' || diagnosisType === 'V' || diagnosisType === 'L')
+  ) {
+    return DIAGNOSIS_TYPE_TIPS[day][diagnosisType];
+  }
+  return DIAGNOSIS_TYPE_TIP_FALLBACK[day];
+}
+
+/**
  * Replace template variables in message content.
  *
  * Supported variables:
@@ -25,6 +62,7 @@ import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
  * - {{friend_id}}           → friend's internal ID
  * - {{auth_url:CHANNEL_ID}} → full /auth/line URL with uid for cross-account linking
  * - {{metadata.KEY}}       → friend's metadata value (from form responses etc.)
+ * - {{type_tip:day3|day5}} → 診断タイプ(F/P/V/L)別の差し込み文（未診断は中立文）
  */
 export function expandVariables(
   content: string,
@@ -62,6 +100,10 @@ export function expandVariables(
     if (val == null) return '';
     return Array.isArray(val) ? val.join(', ') : String(val);
   });
+  // 診断タイプ別差し込み: {{type_tip:day3}} / {{type_tip:day5}}
+  result = result.replace(/\{\{type_tip:(day3|day5)\}\}/g, (_match, day: 'day3' | 'day5') =>
+    resolveTypeTip(day, meta.diagnosis_type),
+  );
   if (apiOrigin) {
     result = result.replace(/\{\{auth_url:([^}]+)\}\}/g, (_match, channelId) => {
       const params = new URLSearchParams({ account: channelId, ref: 'cross-link' });

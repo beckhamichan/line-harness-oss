@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { evaluateCondition, isSupportedConditionType, SUPPORTED_CONDITION_TYPES } from './step-delivery.js';
+import { evaluateCondition, expandVariables, isSupportedConditionType, SUPPORTED_CONDITION_TYPES } from './step-delivery.js';
 
 /**
  * Regression coverage for OSS issue #120 — scenario step
@@ -207,5 +207,53 @@ describe('evaluateCondition', () => {
       // metadata defaults to {} → key is absent → not equal → returns false
       expect(result).toBe(false);
     });
+  });
+});
+
+describe('expandVariables — {{type_tip:dayN}} 診断タイプ別差し込み', () => {
+  const baseFriend = { id: 'friend-1', display_name: 'テスト太郎', user_id: 'U-uuid-1', ref_code: null as string | null };
+  const day3 = '本文。\n{{type_tip:day3}}';
+  const day5 = '本文。\n{{type_tip:day5}}';
+
+  const cases: Array<[string, 'day3' | 'day5', string]> = [
+    ['F', 'day3', '一個ずつ、確実に'],
+    ['P', 'day3', 'スピード判読の感覚'],
+    ['V', 'day3', '目に焼き付けて'],
+    ['L', 'day3', '“語れる”側です'],
+    ['F', 'day5', 'コツコツ勉強会'],
+    ['P', 'day5', '検定チャレンジコース'],
+    ['V', 'day5', '判読会シリーズ'],
+    ['L', 'day5', '臨床推論型の勉強会'],
+  ];
+  for (const [type, day, needle] of cases) {
+    it(`type=${type} の ${day} は専用文が入る`, () => {
+      const tpl = day === 'day3' ? day3 : day5;
+      const out = expandVariables(tpl, { ...baseFriend, metadata: { diagnosis_type: type } });
+      expect(out).toContain(needle);
+      expect(out).not.toContain('{{type_tip');
+    });
+  }
+
+  it('未診断（diagnosis_type 無し）は中立フォールバック文', () => {
+    const out3 = expandVariables(day3, { ...baseFriend, metadata: {} });
+    const out5 = expandVariables(day5, { ...baseFriend, metadata: {} });
+    expect(out3).toContain('一緒に少しずつ波を読めるように');
+    expect(out5).toContain('あなたのペースで楽しめる場所');
+    expect(out3).not.toContain('{{type_tip');
+    expect(out5).not.toContain('{{type_tip');
+  });
+
+  it('不正な diagnosis_type もフォールバックで破綻しない', () => {
+    const out = expandVariables(day3, { ...baseFriend, metadata: { diagnosis_type: 'X' } });
+    expect(out).toContain('一緒に少しずつ波を読めるように');
+    expect(out).not.toContain('{{type_tip');
+  });
+
+  it('{{metadata.diagnosis_label}} は従来どおり展開される', () => {
+    const out = expandVariables('あなたは{{metadata.diagnosis_label}}です', {
+      ...baseFriend,
+      metadata: { diagnosis_label: '語れるようになりたいタイプ' },
+    });
+    expect(out).toBe('あなたは語れるようになりたいタイプです');
   });
 });
