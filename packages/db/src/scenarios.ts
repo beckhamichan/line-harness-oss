@@ -1,5 +1,5 @@
 import { jstNow } from './utils.js';
-import { computeNextDeliveryAt } from './scenario-schedule.js';
+import { computeNextDeliveryAt, clampToDeliveryWindow } from './scenario-schedule.js';
 export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual';
 export type MessageType = 'text' | 'image' | 'flex';
 export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
@@ -414,7 +414,8 @@ export async function enrollFriendInScenario(
     firstStep,
     { enrolledAt: enrolledAtDate, previousDeliveredAt: enrolledAtDate, now: enrolledAtDate },
   );
-  const nextDeliveryAt = nextDeliveryDate.toISOString().slice(0, -1) + '+09:00';
+  // 配信時間帯ガード：深夜帯(JST 21:00〜翌8:00)の初回(Day0)も翌朝へ繰り下げる。
+  const nextDeliveryAt = clampToDeliveryWindow(nextDeliveryDate).toISOString().slice(0, -1) + '+09:00';
 
   // current_step_order is initialized to -1 (NOT 0) so that the step-delivery
   // service's `steps.find(s => s.step_order > fs.current_step_order)` lookup

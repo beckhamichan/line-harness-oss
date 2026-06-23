@@ -8,6 +8,7 @@ import {
   getFriendById,
   jstNow,
   computeNextDeliveryAt,
+  clampToDeliveryWindow,
   resolveStepContent,
   addTagToFriend,
   type DeliveryMode,
@@ -232,7 +233,7 @@ async function processSingleDelivery(
       if (currentStep.next_step_on_false !== null && currentStep.next_step_on_false !== undefined) {
         const jumpStep = steps.find((s) => s.step_order === currentStep.next_step_on_false);
         if (jumpStep) {
-          const jitteredDate = jitterDeliveryTime(nextDeliveryFor(jumpStep));
+          const jitteredDate = clampToDeliveryWindow(jitterDeliveryTime(nextDeliveryFor(jumpStep)));
           await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
           return false;
         }
@@ -240,7 +241,7 @@ async function processSingleDelivery(
       const nextIndex = steps.indexOf(currentStep) + 1;
       if (nextIndex < steps.length) {
         const nextStep = steps[nextIndex];
-        const jitteredDate = jitterDeliveryTime(nextDeliveryFor(nextStep));
+        const jitteredDate = clampToDeliveryWindow(jitterDeliveryTime(nextDeliveryFor(nextStep)));
         await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
       } else {
         await completeFriendScenario(db, fs.id);
@@ -297,7 +298,7 @@ async function processSingleDelivery(
   const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
 
   if (nextStep) {
-    const jitteredDate = jitterDeliveryTime(nextDeliveryFor(nextStep));
+    const jitteredDate = clampToDeliveryWindow(jitterDeliveryTime(nextDeliveryFor(nextStep)));
     await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
   } else {
     // This was the last step

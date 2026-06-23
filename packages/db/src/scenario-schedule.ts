@@ -26,6 +26,35 @@ function addMinutes(date: Date, minutes: number): Date {
   return next;
 }
 
+// 配信禁止時間帯（JST）。21:00〜翌8:00 は配信しない。
+const QUIET_START_HOUR = 21; // この時刻以降は禁止
+const QUIET_END_HOUR = 8; // この時刻未満は禁止（= 8:00 から配信可）
+const MORNING_JITTER_MINUTES = 30; // 繰り下げ先を 8:00〜8:30 に散らす
+
+/**
+ * 配信時間帯ガード：算出済みの配信時刻が JST 21:00〜翌8:00 の禁止帯に入る場合、
+ * 直近の許可開始（8:00）以降へ繰り下げる。繰り下げ先は 8:00〜8:30 でジッタ。
+ * 禁止帯外はそのまま返す（relative運用を維持し、最後にこれだけ適用する想定）。
+ *
+ * 入力 date は computeNextDeliveryAt と同じ「JST clock-time を表す Date」前提
+ * （getHours/setHours/setDate が JST clock 通りに動く＝Workers実行時は local=UTC）。
+ * rand はテスト用に注入可能（既定 Math.random）。
+ */
+export function clampToDeliveryWindow(date: Date, rand: () => number = Math.random): Date {
+  const hour = date.getHours();
+  const inQuiet = hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR;
+  if (!inQuiet) return date;
+
+  const result = new Date(date);
+  // 21:00 以降は「翌日」の朝へ。8:00 未満は「当日」の朝へ。
+  if (hour >= QUIET_START_HOUR) {
+    result.setDate(result.getDate() + 1);
+  }
+  const jitter = Math.floor(rand() * (MORNING_JITTER_MINUTES + 1)); // 0〜30 分
+  result.setHours(QUIET_END_HOUR, jitter, 0, 0);
+  return result;
+}
+
 function addDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
