@@ -1,0 +1,75 @@
+name: Claude
+
+# Issue/PR のラベル、または @claude コメントで起動。
+# plan = 設計・分解、review = PRレビュー。Claudeはコードを書かずコメントで残す。
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+# 最小権限：読み取り＋コメント。書き込み（push/merge）は与えない。
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # --- 設計・タスク分解（Issue に claude:plan）---
+  plan:
+    if: >
+      github.event_name == 'issues' &&
+      github.event.label.name == 'claude:plan'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # 読み取り＋コメントのみ。ファイル変更系ツールは渡さない。
+          claude_args: "--allowedTools Read,Grep,Glob"
+          prompt: |
+            あなたは設計担当です。コードは書かないでください。
+            この Issue を読み、CLAUDE.md の方針に従って次を日本語でコメントしてください。
+            - ゴール / 非ゴール
+            - 受け入れ条件（チェックリスト）
+            - タスク分解（小さな PR 単位・順番・依存）
+            - 影響しそうなファイル候補
+            - 安全制約（特に配信禁止帯 21:00〜翌8:00 / 二重送信 / 秘密情報）
+            最後に「次のタスクはこれ」と「全体像の整理」を必ず含めてください。
+
+  # --- PR レビュー（PR に claude:review）---
+  review:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.label.name == 'claude:review'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Grep,Glob"
+          prompt: |
+            あなたはレビュー担当です。この PR の差分を CLAUDE.md の方針でレビューし、
+            日本語でコメントしてください。特に次を必ず確認：
+            - 配信禁止帯 JST 21:00〜翌8:00（clampToDeliveryWindow）を壊していないか
+            - 二重送信 / 誤アカウント送信 / 大量誤送信のリスク
+            - トークン・顧客データ等の秘密情報が差分に混じっていないか
+            - 設計が小さくレビュー可能な単位か
+            最後に「次のタスクはこれ」と「全体像の整理」を必ず含めてください。
+
+  # --- @claude コメントでの追従（任意の質問・指示）---
+  mention:
+    if: >
+      github.event_name == 'issue_comment' &&
+      contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools Read,Grep,Glob"
