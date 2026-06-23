@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeNextDeliveryAt, type ScenarioRow, type StepRow } from './scenario-schedule.js';
+import { computeNextDeliveryAt, clampToDeliveryWindow, type ScenarioRow, type StepRow } from './scenario-schedule.js';
 
 const enrolledAt = new Date('2026-05-09T14:32:00+09:00');
 const now = new Date('2026-05-09T14:32:00+09:00');
@@ -83,5 +83,69 @@ describe('computeNextDeliveryAt', () => {
       });
       expect(result.toISOString()).toBe(new Date('2027-01-04T08:00:00+09:00').toISOString());
     });
+  });
+});
+
+// ※ このテストは TZ=JST 前提（既存 absolute_time テストと同じ規約）。
+//   clampToDeliveryWindow は getHours/setHours を使うため JST ローカルで評価される。
+describe('clampToDeliveryWindow（配信時間帯ガード JST 21:00〜翌8:00）', () => {
+  const noJitter = () => 0; // → 8:00 ちょうど
+  const maxJitter = () => 0.999; // → floor(0.999*31)=30 → 8:30
+
+  it('日中(12:00)はそのまま', () => {
+    const d = new Date('2026-06-23T12:00:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(d.toISOString());
+  });
+
+  it('20:59 はそのまま（禁止帯の直前）', () => {
+    const d = new Date('2026-06-23T20:59:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(d.toISOString());
+  });
+
+  it('8:00 は配信可（そのまま）', () => {
+    const d = new Date('2026-06-23T08:00:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(d.toISOString());
+  });
+
+  it('21:00 → 翌日 8:00', () => {
+    const d = new Date('2026-06-23T21:00:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(new Date('2026-06-24T08:00:00+09:00').toISOString());
+  });
+
+  it('23:30 → 翌日 8:00', () => {
+    const d = new Date('2026-06-23T23:30:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(new Date('2026-06-24T08:00:00+09:00').toISOString());
+  });
+
+  it('00:30 → 当日 8:00', () => {
+    const d = new Date('2026-06-23T00:30:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(new Date('2026-06-23T08:00:00+09:00').toISOString());
+  });
+
+  it('07:59 → 当日 8:00', () => {
+    const d = new Date('2026-06-23T07:59:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(new Date('2026-06-23T08:00:00+09:00').toISOString());
+  });
+
+  it('ジッタ最大で 8:30 に寄る', () => {
+    const d = new Date('2026-06-23T01:00:00+09:00');
+    expect(clampToDeliveryWindow(d, maxJitter).toISOString()).toBe(new Date('2026-06-23T08:30:00+09:00').toISOString());
+  });
+
+  it('月跨ぎ：6/30 22:00 → 7/1 8:00', () => {
+    const d = new Date('2026-06-30T22:00:00+09:00');
+    expect(clampToDeliveryWindow(d, noJitter).toISOString()).toBe(new Date('2026-07-01T08:00:00+09:00').toISOString());
+  });
+
+  it('繰り下げ後は必ず 8:00〜8:30 の範囲（ランダム30回）', () => {
+    for (let i = 0; i < 30; i++) {
+      const d = new Date('2026-06-23T02:00:00+09:00');
+      const r = clampToDeliveryWindow(d); // 既定 Math.random
+      // JST 8:00〜8:30 = UTC 前日23:00〜23:30
+      const lo = new Date('2026-06-23T08:00:00+09:00').getTime();
+      const hi = new Date('2026-06-23T08:30:00+09:00').getTime();
+      expect(r.getTime()).toBeGreaterThanOrEqual(lo);
+      expect(r.getTime()).toBeLessThanOrEqual(hi);
+    }
   });
 });
