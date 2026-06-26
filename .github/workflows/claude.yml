@@ -32,6 +32,8 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # 読み取り＋コメントのみ。ファイル変更系ツールは渡さない。
           claude_args: "--allowedTools Read,Grep,Glob"
+          # 診断用: Claude の実行出力（エラー本文含む）をログに表示する。原因特定後に外す。
+          show_full_output: true
           prompt: |
             あなたは設計担当です。コードは書かないでください。
             この Issue を読み、CLAUDE.md の方針に従って次を日本語でコメントしてください。
