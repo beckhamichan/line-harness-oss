@@ -11,10 +11,12 @@ on:
     types: [created]
 
 # 最小権限：読み取り＋コメント。書き込み（push/merge）は与えない。
+# id-token: write は claude-code-action の OIDC 認証に必須（無いと起動前に失敗する）。
 permissions:
   contents: read
   issues: write
   pull-requests: write
+  id-token: write
 
 jobs:
   # --- 設計・タスク分解（Issue に claude:plan）---
