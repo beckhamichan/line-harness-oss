@@ -5,7 +5,10 @@
 > **文面を変えるときは「D1 と本ファイルの両方」を更新する**こと（どちらかだけ更新しない）。
 
 - シナリオ ID: `a8c02e28-beb1-4202-ac83-b39401a56e42`
-- `trigger_type`: **manual**（本番化時に `friend_add` へ。**未実施**）
+- `trigger_type`: **tag_added**（起動タグ `trigger_tag_id` = `4cdecec7-c40d-4fb1-b972-8e530dc60111` ＝ **R:心電図**）
+  - 2026-06-27 に 9-C（`UPDATE scenarios SET trigger_type='tag_added', trigger_tag_id='4cdecec7…'`）を live D1 へ適用済。
+  - 起動経路：Hub（`?page=hub`）で「心電図」選択 → `R:心電図` タグ付与 → 本シナリオが自動 enroll（Day0=診断誘導）。
+  - 旧記載の「本番化時に `friend_add` へ」は**入口シナリオ hub-entry 側の役割に移行**。本シナリオは恒久的に `tag_added`（friend_add 化はしない）。
 - `delivery_mode`: `relative`（前ステップからの相対・分）
 - `is_active`: 1（cron 5分毎で配信）
 - LIFF 診断 URL: `https://liff.line.me/2010453320-O9UsF9z4?page=diagnosis`
@@ -165,3 +168,15 @@ https://be-navigator.com/membership-checkout/?level=1
 診断完了時に `POST /api/liff/diagnosis` がタイプ別に1通 Push（本シナリオとは別経路）。
 F=📚コツコツ基礎固め / P=🎯検定で結果を出す / V=🖼パターンで覚える / L=🧠語れるようになりたい。
 （全文はコード参照。文面を変える場合は liff.ts を更新→デプロイ）
+
+## 更新履歴（D1 への適用記録）
+
+> 本シナリオの **trigger / 文面など D1 側の変更は、適用日とともにここへ記録**する（正本ミラー運用）。
+
+- **2026-06-27 — 9-C 適用（trigger を tag_added 化）**
+  - 変更：`a8c02e28` の `trigger_type` を `manual` → `tag_added`、`trigger_tag_id` を `NULL` → `4cdecec7-c40d-4fb1-b972-8e530dc60111`（**R:心電図**）。
+  - 目的：マルチルートCRM（V1.1）で、Hub の「心電図」選択（→ R:心電図 付与）から本オンボーディングを自動起動させるため。
+  - 適用 SQL：`UPDATE scenarios SET trigger_type='tag_added', trigger_tag_id='4cdecec7-c40d-4fb1-b972-8e530dc60111' WHERE id='a8c02e28-beb1-4202-ac83-b39401a56e42';`
+  - ロールバック：`UPDATE scenarios SET trigger_type='manual', trigger_tag_id=NULL WHERE id='a8c02e28-beb1-4202-ac83-b39401a56e42';`
+  - 検証：テストユーザー限定 E2E（Hub「心電図」→ R:心電図付与 → 本シナリオ自動 enroll → 診断完走→結果Push）で動作確認済。**配信は B1 時間帯ガード（JST 21:00〜翌8:00 禁止）適用後**（Day0 が深夜に計算された場合は翌朝 8:00〜8:30 へ繰り下げ）。
+  - 関連：本番化（`hub-entry` を `friend_add` 化＝Phase C）は**未実施**（オーナー Go 後）。
