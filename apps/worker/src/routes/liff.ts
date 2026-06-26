@@ -1970,6 +1970,18 @@ function routeIntroMessage(key: RouteKey): string {
   return `「${ROUTE_MAP[key].label}」に興味を持ってくれてありがとう！🚢 いま、あなたにぴったりの航路を準備しています。整い次第、いちばんにご案内しますね。\n——ベッカミ`;
 }
 
+async function hasActiveTagAddedScenario(db: D1Database, tagId: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM scenarios
+       WHERE trigger_type = 'tag_added' AND trigger_tag_id = ?1 AND is_active = 1
+       LIMIT 1`,
+    )
+    .bind(tagId)
+    .first();
+  return Boolean(row);
+}
+
 liffRoutes.post('/api/liff/route-select', async (c) => {
   try {
     const db = c.env.DB;
@@ -2023,6 +2035,11 @@ liffRoutes.post('/api/liff/route-select', async (c) => {
 
     // ④ ルート別の案内 Push（best-effort・messages_log 記録）
     try {
+      const shouldSendIntro = interest === 'ecg' || !(await hasActiveTagAddedScenario(db, route.rTag));
+      if (!shouldSendIntro) {
+        return c.json({ success: true, data: { interest, label: route.label, nextPage: route.nextPage } });
+      }
+
       let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
       if (friend.line_account_id) {
         const acct = await getLineAccountById(db, friend.line_account_id);
