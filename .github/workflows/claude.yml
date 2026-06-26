@@ -30,13 +30,18 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # 読み取り＋コメントのみ。ファイル変更系ツールは渡さない。
-          claude_args: "--allowedTools Read,Grep,Glob"
-          # 診断用: Claude の実行出力（エラー本文含む）をログに表示する。原因特定後に外す。
-          show_full_output: true
+          # track_progress: 自動化モードでトラッキングコメントを作成し、
+          # Issue コンテキストとコメント更新ツールを提供する（v1 は既定で作らない）。
+          track_progress: true
+          # 読み取り＋コメント更新のみ。ファイル変更系（Edit/Write/Bash）は渡さない。
+          claude_args: "--allowedTools Read,Grep,Glob,mcp__github_comment__update_claude_comment"
           prompt: |
             あなたは設計担当です。コードは書かないでください。
-            この Issue を読み、CLAUDE.md の方針に従って次を日本語でコメントしてください。
+            対象 Issue #${{ github.event.issue.number }}「${{ github.event.issue.title }}」の本文:
+
+            ${{ github.event.issue.body }}
+
+            上記 Issue について、CLAUDE.md の方針に従って次を日本語でコメントしてください。
             - ゴール / 非ゴール
             - 受け入れ条件（チェックリスト）
             - タスク分解（小さな PR 単位・順番・依存）
