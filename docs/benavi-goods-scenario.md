@@ -1,4 +1,6 @@
-# beナビ ECG♡PASS ルート 導入ミニシナリオ（3日間・情報購読型）— 【本文確定・本番化作業中】
+# beナビ ECG♡PASS ルート 導入ミニシナリオ（3日間・情報購読型）— 【本番稼働中】
+
+> **適用記録（2026-06-27 JST）**：D1 `line-harness` へ `goods_onboarding.sql` 適用（scenario `7dfee92e…` + steps×3・changes5）。backup `d1-backups/line-harness_pre-goods_20260627-160604.sql`。E2E（route-select interest=goods）→ **Day0のみ1通配信・intro抑制・next=Day2相当(+2880分)** を確認し enrollment を completed で停止。deploy 不要（ROUTE_MAP に `goods` 実装済・intro抑制は scenario 投入で自動ON）。
 
 > route key=`goods`（タグ `R:文房具`）。**ブランド名 ECG♡PASS を前面に出す情報購読型**。フィード型2層モデルの「層1＝導入ミニシナリオ」。設計の母体は [benavi-feed-template.md](benavi-feed-template.md)。
 > **コンセプト**：「ECG♡PASS を売るLINE」ではなく、**発売情報・開発ストーリー・使い方・最新情報を“受け取れる”LINE**。販売は各取扱店（be Navigator は販売しない＝送客）。
@@ -74,12 +76,12 @@ ECG♡PASS は、2026年8月下旬の発売を予定しています。
 
 ---
 
-## 本番化フロー（進行中）
+## 本番化フロー（実施済み・2026-06-27）
 1. ✅ 本文FIX（本書）／固定UUID発番
-2. ⏳ `goods_onboarding.sql` 生成 → Claudeレビュー
-3. 🔴 事前検証 → export backup → D1適用（オーナーGo）
-4. 🔴 E2E（route-select interest=goods → Day0のみ／intro抑制）→ enrollment completed 停止
-5. 本書を「本番稼働中」へ更新＋適用記録
+2. ✅ `goods_onboarding.sql` 生成 → Claudeレビュー（本文↔md一致3/3・UUID衝突0）
+3. ✅ 事前検証 → export backup → D1適用（オーナーGo・changes5）
+4. ✅ E2E（Day0のみ1通・intro抑制）→ enrollment completed 停止
+5. ✅ 本書を「本番稼働中」へ更新＋適用記録
 
 ## 残課題（本番化後の運用・任意）
 - 発売後：Day0/Day4 の「発売予定」表現の更新（層2 broadcast 告知 or シナリオ改訂）。
