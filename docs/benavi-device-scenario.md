@@ -1,9 +1,9 @@
-# beナビ 心臓デバイスルート オンボーディング（7日間・教育型）— 本文案【未適用・本文レビュー段階】
+# beナビ 心臓デバイスルート オンボーディング（7日間・教育型）— シナリオ正本ミラー【本番稼働中】
 
-> [benavi-onboarding-template.md](benavi-onboarding-template.md) から複製。`{{route_theme}}` = **「心臓デバイス」**。
-> Day0/1/2/6/7 はテーマ名差替のみ／Day3・Day5 を執筆。**現段階は本文案のみ**：固定UUID発番・SQL生成・D1適用・deploy は未実施。
+> ✅ **D1 上の device シナリオ文面の git 追跡ミラー（正本）。** [benavi-onboarding-template.md](benavi-onboarding-template.md) から複製・`{{route_theme}}` = **「心臓デバイス」**。Day0/1/2/6/7 はテーマ名差替のみ／Day3・Day5 を執筆。
+> - **2026-06-27 に D1 投入・本番稼働開始・実機 E2E 成功済。** 詳細は末尾「更新履歴」。**文面を変えるときは D1 と本ファイルの両方を更新**する。
 
-## シナリオ定義（本文確定後に発番・投入）
+## シナリオ定義
 
 | 項目 | 値 |
 |---|---|
@@ -145,9 +145,11 @@ https://be-navigator.com/membership-checkout/?level=1
 
 ---
 
-## 次の手順（本文OK後）
-1. 固定UUID発番（scenario 1 + steps 7）
-2. INSERT `.sql` 生成（Codex委譲）→ Claudeレビュー
-3. 事前検証 → export backup → D1適用（オーナーGo）
-4. E2E（Day0のみ届く確認）→ enrollment completed 停止
-5. 本ファイルを「本番稼働中」へ更新＋更新履歴に適用記録
+## 更新履歴（D1 への適用記録）
+
+- **2026-06-27 — 新規作成・D1 投入・本番稼働開始・実機 E2E 成功**
+  - 投入：[device_onboarding.sql](../device_onboarding.sql)（`scenarios` 1 行 ＋ `scenario_steps` 7 行）を `wrangler d1 execute line-harness --remote --file` で適用（`changed_db: true`）。SQL 生成は Codex 委譲 → Claude レビュー合格（本文↔md 一致・delay 並び・禁止文0・SQLite パース）。
+  - 前提：T1（route-select 二重メッセージ対策）反映済 → live worker Version `a1a148de-cad3-4cea-b550-f39eef014216`（追加 deploy 不要）。
+  - バックアップ：`/tmp/benavi/d1_full_20260627-103235.sql`（適用直前フルエクスポート・揮発注意）。
+  - E2E（テストユーザー限定・実 LINE 送信・必要最小限）：Hub「心臓デバイス」→ route-select 200（nextPage=null）→ **R:デバイス付与・enrollment 作成・intro Push 抑制（新規 outgoing 0 件＝T1 効果）** → cron で **Day0 が 1 通だけ実送信**（step_order 1・「ようこそ、beナビへ🫀／心臓デバイスを学び…」・**二重 Push なし**）→ **検証後 enrollment は completed / next_delivery_at=NULL で停止**。他ユーザー未波及。
+  - 投入済 SQL：`device_onboarding.sql` は投入済として保持（再適用は不要＝PK 衝突）。ロールバックは scenario/steps を DELETE（`ON DELETE CASCADE` で `friend_scenarios` も削除）。
