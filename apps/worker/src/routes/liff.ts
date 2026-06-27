@@ -1853,6 +1853,7 @@ const DX_RESULT_MESSAGES: Record<DxTypeKey, string> = {
 
 // 7日間オンボーディングシナリオ（trigger=manual・下書き運用。本番化は friend_add へ変更）
 const DX_ONBOARDING_SCENARIO_ID = 'a8c02e28-beb1-4202-ac83-b39401a56e42';
+const M_MEMBER_TAG_ID = '5e3a934c-3d42-4409-a359-6a254588fb72';
 
 liffRoutes.post('/api/liff/diagnosis', async (c) => {
   try {
@@ -1919,7 +1920,13 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
 
     // ③ 7日間オンボーディングへ enroll（best-effort・既enrollはnull）
     try {
-      await enrollFriendInScenario(db, friend.id, DX_ONBOARDING_SCENARIO_ID);
+      const isMember = await db
+        .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ? LIMIT 1')
+        .bind(friend.id, M_MEMBER_TAG_ID)
+        .first();
+      if (!isMember) {
+        await enrollFriendInScenario(db, friend.id, DX_ONBOARDING_SCENARIO_ID);
+      }
     } catch (e) {
       console.error('diagnosis enroll error:', e);
     }
@@ -1985,10 +1992,11 @@ async function hasActiveTagAddedScenario(db: D1Database, tagId: string): Promise
 liffRoutes.post('/api/liff/route-select', async (c) => {
   try {
     const db = c.env.DB;
-    const body = await c.req.json<{ lineUserId?: string; interest?: string }>();
+    const body = await c.req.json<{ lineUserId?: string; interest?: string; isMember?: boolean }>();
 
     const lineUserId = body.lineUserId;
     const interest = body.interest;
+    const isMember = body.isMember === true;
     if (!lineUserId || !isRouteKey(interest)) {
       return c.json({ success: false, error: 'lineUserId and valid interest are required' }, 400);
     }
@@ -2004,8 +2012,11 @@ liffRoutes.post('/api/liff/route-select', async (c) => {
     // ① 興味タグ I:（恒久） ② ルートタグ R:（tag_added 起動）。
     // attachTagAndFireSideEffects = friend_tags INSERT OR IGNORE ＋ tag_added enroll ＋ tag_change。
     try {
+      if (isMember) {
+        await attachTagAndFireSideEffects(db, friend.id, M_MEMBER_TAG_ID);
+      }
       await attachTagAndFireSideEffects(db, friend.id, route.iTag);
-      await attachTagAndFireSideEffects(db, friend.id, route.rTag);
+      await attachTagAndFireSideEffects(db, friend.id, route.rTag, isMember ? { enroll: false } : undefined);
     } catch (e) {
       console.error('route-select tag attach error:', e);
     }

@@ -3,10 +3,11 @@
  *
  * Flow:
  * 1. liff.getProfile() で userId を取得
- * 2. 「ようこそ」体験（船長の歓迎）＋ 7つの目的カードを表示（単一選択）
- * 3. 1つ選んで「この航海に出航する」→ POST /api/liff/route-select { lineUserId, interest }
+ * 2. 会員かどうかを自己申告
+ * 3. 「ようこそ」体験（船長の歓迎）＋ 7つの目的カードを表示（単一選択）
+ * 4. 1つ選んで「この航海に出航する」→ POST /api/liff/route-select { lineUserId, interest, isMember }
  *    → サーバーが 興味タグ(I:)＋ルートタグ(R:) を付与（R: の tag_added で対応ルートが自動開始）
- * 4. 応答 data.nextPage === 'diagnosis'（心電図）なら ?page=diagnosis へ遷移、
+ * 5. 応答 data.nextPage === 'diagnosis'（心電図）なら ?page=diagnosis へ遷移、
  *    それ以外は完了画面を表示して liff.closeWindow()
  *
  * URL: https://liff.line.me/{LIFF_ID}?page=hub
@@ -41,6 +42,7 @@ const HUB_CARDS: HubCard[] = [
 
 let hubProfile: { userId: string; displayName: string } | null = null;
 let hubSelected: RouteKey | null = null;
+let hubIsMember: boolean | null = null;
 let hubSubmitting = false;
 
 function getApp(): HTMLElement {
@@ -51,6 +53,41 @@ function esc(str: string): string {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ── 画面：会員自己申告 ──
+function renderMembership(): void {
+  getApp().innerHTML = `
+    <div class="hub-page">
+      <div class="hub-hero">
+        <div class="hub-hero-brand">be Navigator</div>
+        <h1 class="hub-hero-title">現在、be Navigatorの月額メンバーですか？</h1>
+      </div>
+
+      <div class="hub-cards hub-membership">
+        <button class="hub-card" data-member="true">
+          <span class="hub-card-body">
+            <span class="hub-card-title">はい、参加しています</span>
+          </span>
+          <span class="hub-card-chev">›</span>
+        </button>
+        <button class="hub-card" data-member="false">
+          <span class="hub-card-body">
+            <span class="hub-card-title">まだ参加していません</span>
+          </span>
+          <span class="hub-card-chev">›</span>
+        </button>
+      </div>
+    </div>`;
+
+  getApp()
+    .querySelectorAll<HTMLButtonElement>('.hub-card[data-member]')
+    .forEach((btn) => {
+      btn.addEventListener('click', () => {
+        hubIsMember = btn.dataset.member === 'true';
+        renderHub();
+      });
+    });
 }
 
 // ── 画面：Hub（ようこそ＋カード）──
@@ -123,7 +160,7 @@ async function submitRoute(): Promise<void> {
     const res = await fetch('/api/liff/route-select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineUserId: hubProfile.userId, interest: selected }),
+      body: JSON.stringify({ lineUserId: hubProfile.userId, interest: selected, isMember: hubIsMember }),
     });
     const json = (await res.json().catch(() => null)) as
       | { success?: boolean; data?: { interest: string; label?: string; nextPage?: string | null } }
@@ -140,20 +177,22 @@ async function submitRoute(): Promise<void> {
       return;
     }
 
-    renderDone(label);
+    renderDone(label, false, hubIsMember === true);
   } catch {
     // 送信失敗時もユーザーを行き止まりにしない
-    renderDone(HUB_CARDS.find((c) => c.key === selected)?.title ?? '', true);
+    renderDone(HUB_CARDS.find((c) => c.key === selected)?.title ?? '', true, hubIsMember === true);
   } finally {
     hubSubmitting = false;
   }
 }
 
 // ── 画面：完了（心電図以外）──
-function renderDone(label: string, failed = false): void {
+function renderDone(label: string, failed = false, isMember = false): void {
   const msg = failed
     ? '受け付けに失敗したかもしれません。お手数ですが、もう一度お試しください。'
-    : `「${esc(label)}」の航海へ、ようこそ！🚢<br>ご案内はLINEのトークにお送りします。<br>このまま画面を閉じてお待ちください。`;
+    : isMember
+      ? `ご登録ありがとうございます。<br>「${esc(label)}」の興味を承りました。<br>このまま画面を閉じてください。`
+      : `「${esc(label)}」の航海へ、ようこそ！🚢<br>ご案内はLINEのトークにお送りします。<br>このまま画面を閉じてお待ちください。`;
   getApp().innerHTML = `
     <div class="hub-page">
       <div class="hub-card-done">
@@ -188,6 +227,7 @@ function injectStyles(): void {
     .hub-ask-q { font-size: 16px; font-weight: 800; color: #0B2A4A; }
     .hub-ask-note { font-size: 12px; color: #94a3b8; margin-top: 4px; }
     .hub-cards { display: flex; flex-direction: column; gap: 10px; }
+    .hub-membership { margin-top: 16px; }
     .hub-card { display: flex; align-items: center; gap: 12px; text-align: left; width: 100%; padding: 14px; border: 1.5px solid #e2e8f0; border-radius: 12px; background: #fafbfc; cursor: pointer; transition: all .12s; font-family: inherit; }
     .hub-card.selected { border-color: #0B2A4A; background: #eef4fb; border-width: 2px; }
     .hub-card-emoji { flex-shrink: 0; font-size: 22px; }
@@ -218,5 +258,5 @@ export async function initHub(): Promise<void> {
     showHubError('LINEのプロフィール取得に失敗しました。LINEアプリ内で開き直してください。');
     return;
   }
-  renderHub();
+  renderMembership();
 }
