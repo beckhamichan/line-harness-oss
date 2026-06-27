@@ -35,6 +35,8 @@
 
 ## 3. goods（文房具・便利グッズ）導入ミニシナリオ 本文案
 
+> ⚠️ **本番は「ECG♡PASSルート」として本文確定済み**。正本＝[benavi-goods-scenario.md](benavi-goods-scenario.md)（ブランド前面・情報購読型・署名 ——be Navigator）。以下は初期の設計案（プレースホルダ枠つき）で、本番文面とは異なる。
+
 - route key=`goods` / `trigger_tag_id`=**R:文房具** `52799965-061a-4710-8e9c-d0cedac02dc8`
 - 3ステップ（Day0/Day2/Day4）。delay_minutes=`0 / 2880 / 2880`。
 - トーン：**教育色は薄く・押し売りしない**。各社リンクは tracked-link で計測。`〔 〕` は運用差し込み枠。
