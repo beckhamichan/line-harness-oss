@@ -138,9 +138,11 @@ https://be-navigator.com/membership-checkout/?level=1
 
 ---
 
-## 次の手順（本文OK後）
-1. 固定UUID発番（scenario 1 + steps 7）
-2. INSERT `.sql` 生成（Codex委譲）→ Claudeレビュー
-3. 事前検証 → export backup → D1適用（オーナーGo）
-4. E2E（Day0のみ届く確認）→ enrollment completed 停止
-5. 本ファイルを「本番稼働中」へ更新＋更新履歴に適用記録
+## 本番化フロー（実施済み・2026-06-27）
+1. ✅ 固定UUID発番（scenario 1 + steps 7）
+2. ✅ INSERT `.sql` 生成（`ai_onboarding.sql`）→ Claudeレビュー（本文↔md一致・UUID衝突なし）
+3. ✅ 事前検証（R:AI存在/未投入）→ export backup（`d1-backups/line-harness_pre-AI_20260627-130741.sql`）→ D1適用（オーナーGo・changes9）
+4. ✅ E2E（route-select interest=ai → Day0のみ1通・intro抑制）→ enrollment completed 停止
+5. ✅ 本ファイルを「本番稼働中」へ更新＋適用記録（冒頭）／deploy不要
+
+> 以後の教育型ルート量産は [benavi-route-productionization-checklist.md](benavi-route-productionization-checklist.md) を正本手順とする。
