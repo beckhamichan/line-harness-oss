@@ -1,10 +1,9 @@
-# beナビ 循環器ルート オンボーディング（7日間・教育型）— シナリオ正本ミラー【案・未適用】
+# beナビ 循環器ルート オンボーディング（7日間・教育型）— シナリオ正本ミラー【本番稼働中】
 
-> ⚠️ **本ファイルは「作成のみ・D1未適用」の案です。** 心電図ルート（[benavi-onboarding-scenario.md](benavi-onboarding-scenario.md)）と同じ「D1ミラー運用」を踏襲する想定で作成。
-> - **コピーは雛形（心電図 a8c02e28）からの再起案。確定版コピーは前セッションのコンテキスト要約で本文が失われたため再執筆した。2026-06-27 にオーナー文面レビュー（5観点）を反映し本文 FIX 候補。** 反映：①Day0 歓迎文追記・③Day5/Day7「循環器シリーズ」→実態に合わせ「循環器の勉強会・コンテンツ」表現へ（週5回/21:30/アーカイブ236本以上は実態どおり据え置き）・②Day3 二択クイズは初心者方針で現状維持・④Day2 重複は将来課題として記録（下記）。
-> - 適用（D1 INSERT）・deploy は本ファイル作成時点では**行っていない**。
-> - 適用順の前提：**T1（route-select 二重メッセージ対策・main マージ済／未deploy）を deploy してから** circ を稼働させること（でないと live route-select は旧挙動で二重 Push になる）。
-> - **将来課題（V1.2スコープ外・記録のみ）**：Day2「船を出した理由」は心電図ルート Day2 とほぼ同文。R:心電図 と R:循環器 を両方選んだ友だちは Day2 で重複体験になる。複数ルート登録者向けの共有ステップ重複排除は将来検討（現状は他ルート R:タグ保持者 0 件で実害なし）。
+> ✅ **本ファイルは Cloudflare D1 上の circ シナリオ文面の git 追跡ミラー（正本）です。** 心電図ルート（[benavi-onboarding-scenario.md](benavi-onboarding-scenario.md)）と同じ「D1ミラー運用」。**文面を変えるときは「D1 と本ファイルの両方」を更新する**こと。
+> - **2026-06-27 に D1 投入・本番稼働開始・実機 E2E 成功済。** 適用記録は末尾「更新履歴」を参照。
+> - **コピーは雛形（心電図 a8c02e28）からの再起案。確定版コピーは前セッションのコンテキスト要約で本文が失われたため再執筆し、同日オーナー文面レビュー（5観点）を反映して FIX した。** 反映：①Day0 歓迎文追記・③Day5/Day7「循環器シリーズ」→実態に合わせ「循環器の勉強会・コンテンツ」表現へ（週5回/21:30/アーカイブ236本以上は実態どおり据え置き）・②Day3 二択クイズは初心者方針で現状維持・④Day2 重複は将来課題として記録（下記）。
+> - **将来課題（V1.2スコープ外・記録のみ）**：Day2「船を出した理由」は心電図ルート Day2 とほぼ同文。R:心電図 と R:循環器 を両方選んだ友だちは Day2 で重複体験になる。複数ルート登録者向けの共有ステップ重複排除は将来検討（現状は他ルート R:タグ保持者は実E2Eのテストユーザーのみ）。
 
 ## シナリオ定義
 
@@ -32,7 +31,7 @@
 
 ---
 
-## ステップ本文（案・D1 と一致させる正本ミラー）
+## ステップ本文（D1 と一致させる正本ミラー）
 
 ### Day0（step_order 1）
 ```
@@ -140,13 +139,14 @@ https://be-navigator.com/membership-checkout/?level=1
 
 ---
 
-## 適用 SQL 案（INSERT）— ⚠️ 未適用
+## 適用 SQL（INSERT）— ✅ 2026-06-27 D1 投入済
 
-> 適用前チェック：
-> 1. **T1 deploy 済み**であること（circ 稼働の前提）。
-> 2. 下記「export 手順」で **適用直前の D1 バックアップを取得**してあること。
-> 3. **本文のオーナー最終確認**が済んでいること（コピーは雛形からの再起案）。
-> 4. `trigger_tag_id` の `c17ecb3c…`（R:循環器）が D1 の `tags` に存在すること（9-A で作成済の想定／適用前に下記「事前検証クエリ」で確認）。
+> この INSERT は **2026-06-27 に live D1（line-harness）へ適用済**（リポ同梱の [circ_onboarding.sql](../circ_onboarding.sql) が投入した実体）。下記は記録用。再適用は不要（再投入すると PRIMARY KEY 衝突）。
+> 適用前に満たした条件（記録）：
+> 1. ✅ **T1 deploy 済み**（live worker Version `a1a148de-cad3-4cea-b550-f39eef014216`）。
+> 2. ✅ 適用直前の D1 フルバックアップ取得（`/tmp/benavi/d1_full_20260627-093600.sql`・揮発注意）。
+> 3. ✅ 本文のオーナー文面レビュー（5観点）反映済。
+> 4. ✅ `trigger_tag_id` の `c17ecb3c…`（R:循環器）が D1 に存在（事前検証クエリで確認）。
 
 ```sql
 -- ============================================================
@@ -191,7 +191,7 @@ SELECT id FROM scenarios WHERE id='c0cc3d89-cd8e-4f36-9734-3e291076e3ca';
 
 ---
 
-## export 手順（適用直前バックアップ・案）
+## export 手順（適用直前バックアップ・2026-06-27 実施済）
 
 > live D1 名・bindings は wrangler 設定に従う（実コマンドは適用担当が確認のうえ実行）。
 ```bash
@@ -207,17 +207,17 @@ wrangler d1 export <DB_NAME> --remote --output /tmp/benavi/d1_full_$(date +%Y%m%
 ```
 > 投入前は scenarios/steps とも 0 行のはず（新規 UUID のため）。よって実質ロールバックは「入れたものを消す」だけで足りる。
 
-## 適用手順（案）— ⚠️ 実行は別途オーナーGo後
+## 適用手順（2026-06-27 実施済の記録）
 
-1. **T1 deploy 済み**を確認（`pnpm --filter worker run deploy` は feature branch から・高リスク扱い）。
-2. 上記「事前検証クエリ」で R:循環器 タグ存在＋ scenario 未投入を確認。
-3. export 手順でバックアップ取得。
-4. 本文確定版で生成した `.sql`（scenarios 1 行 + steps 7 行）を投入：
-   `wrangler d1 execute <DB_NAME> --remote --file ./circ_onboarding.sql`
-5. 投入後検証：`SELECT step_order, delay_minutes, substr(message_content,1,20) FROM scenario_steps WHERE scenario_id='c0cc3d89…' ORDER BY step_order;`（7 行・順序 1..7・delay 0/1440/1440/1440/2880/1440/1440）。
-6. circ E2E（テストユーザー限定）：Hub「循環器」→ R:循環器付与 → 本シナリオ自動 enroll →**Day0 のみ届く**（T1 効果＝二重 Push なし）を確認。
+実際に踏んだ手順（再適用ではなく履歴）：
+1. ✅ T1 deploy（`pnpm --filter worker run deploy` を **main** から実施）→ live worker Version `a1a148de-cad3-4cea-b550-f39eef014216`。
+2. ✅ 事前検証クエリで R:循環器 タグ存在＋ circ scenario 未投入（0 行）を確認。
+3. ✅ フルバックアップ取得（`wrangler d1 export line-harness --remote` → `/tmp/benavi/d1_full_20260627-093600.sql`）。
+4. ✅ `wrangler d1 execute line-harness --remote --file circ_onboarding.sql` 投入（`changed_db: true`）。
+5. ✅ 投入後検証：scenario 1 行・steps 7 行・順序 1..7・delay `0/1440/1440/1440/2880/1440/1440`・`tag_added` active = ecg + circ の 2 本。
+6. ✅ circ E2E（テストユーザー限定）：Hub「循環器」→ R:循環器付与 → 自動 enroll → **Day0 のみ届く**（intro Push 抑制＝T1 効果・二重 Push なし）を実機確認。詳細は末尾「更新履歴」。
 
-## ロールバック SQL 案
+## ロールバック SQL（投入済シナリオを撤去する場合）
 
 ```sql
 -- circ シナリオと全ステップを削除（steps は ON DELETE CASCADE だが明示削除も可）
@@ -230,16 +230,19 @@ DELETE FROM scenarios      WHERE id='c0cc3d89-cd8e-4f36-9734-3e291076e3ca';
 
 ---
 
-## 正本 docs（beNavigator_CRM_v1.md / V1_1_implementation_plan.md）追記案
+## 関連 docs の追従（TODO）
 
-> 適用時に下記を追記する想定（**今は案のみ・本ファイル作成時点では未追記**）。
-
-- `beNavigator_CRM_V1_1_implementation_plan.md` のシナリオ一覧（circ 行が「（V1.2）」のままの箇所）を、適用後に
-  `circulation-onboarding | c0cc3d89-cd8e-4f36-9734-3e291076e3ca | tag_added | R:循環器=c17ecb3c-… | 7 | V1.2で新規作成` へ更新。
-- 本ファイル冒頭の「⚠️ 案・未適用」表記は、D1 適用後に外し、`benavi-onboarding-scenario.md` と同じ「更新履歴（D1 への適用記録）」セクションへ適用日・適用 SQL・ロールバック・E2E 記録を追記する。
+- ⬜ `beNavigator_CRM_V1_1_implementation_plan.md` のシナリオ一覧（circ 行が「（V1.2）」のままの箇所）を
+  `circulation-onboarding | c0cc3d89-cd8e-4f36-9734-3e291076e3ca | tag_added | R:循環器=c17ecb3c-… | 7 | 2026-06-27 稼働開始` へ更新（別 PR でも可）。
+- ✅ 本ファイル冒頭の「案・未適用」表記は撤去し、「本番稼働中」＋下記「更新履歴」へ適用記録を反映済。
 
 ## 更新履歴（D1 への適用記録）
 
-> D1 へ適用したら、適用日とともにここへ記録する（正本ミラー運用）。
+> 本シナリオの trigger / 文面など D1 側の変更は、適用日とともにここへ記録する（正本ミラー運用）。
 
-- （未適用）
+- **2026-06-27 — 新規作成・D1 投入・本番稼働開始・実機 E2E 成功**
+  - 投入：`circ_onboarding.sql`（`INSERT INTO scenarios` 1 行 ＋ `scenario_steps` 7 行）を `wrangler d1 execute line-harness --remote --file` で適用（`changed_db: true`）。SQL 生成は Codex 委譲 → Claude レビュー合格。
+  - 前提：T1（route-select 二重メッセージ対策）を **main から deploy** 済 → live worker Version `a1a148de-cad3-4cea-b550-f39eef014216`（旧 `e0141a92`）。
+  - バックアップ：`/tmp/benavi/d1_full_20260627-093600.sql`（適用直前のフルエクスポート・揮発注意）。
+  - E2E（テストユーザー Koji Mano 限定・実 LINE 送信）：Hub「循環器」→ route-select 200（nextPage=null）→ **R:循環器＋I:循環器付与・circ enrollment 作成・直後の新規 outgoing 0 件＝intro Push 抑制成功**（T1 効果）→ cron(*/5) で **Day0 が 1 通だけ実送信**（step_order 1・「ようこそ、beナビへ🫀」・**二重 Push なし**）→ enrollment は order1/Day1 予定へ前進 → **検証後 status=completed / next_delivery_at=NULL で停止**。他ユーザー未波及・全体 active/delivering=0。
+  - ロールバック（必要時）：上記「ロールバック SQL」で scenario と steps を削除（`ON DELETE CASCADE` で `friend_scenarios` も削除）。worker 側は前 Version へロールバック可。
