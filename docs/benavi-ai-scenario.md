@@ -1,7 +1,9 @@
-# beナビ AI活用ルート オンボーディング（7日間・教育型）— 本文案【未適用・本文レビュー段階】
+# beナビ AI活用ルート オンボーディング（7日間・教育型）— 【本番稼働中】
 
 > [benavi-onboarding-template.md](benavi-onboarding-template.md) から複製。`{{route_theme}}` = **「AI活用」**。
-> Day0/1/2/6/7 はテーマ名差替のみ／Day3・Day5 を執筆。**現段階は本文案のみ**：固定UUID発番・SQL生成・D1適用・deploy は未実施。
+> Day0/1/2/6/7 はテーマ名差替／Day3・Day5 を執筆。**本番稼働中（5本目）**：固定UUID発番・`ai_onboarding.sql` 生成・D1適用・E2E 完了済。deploy は不要（ROUTE_MAP に `ai` 実装済・intro抑制はscenario投入で自動ON）。
+>
+> **適用記録（2026-06-27 JST）**：D1 `line-harness` へ `ai_onboarding.sql` 適用（scenario `dabed850…` + steps×7）。backup `d1-backups/line-harness_pre-AI_20260627-130741.sql`。E2E（自アカウントで route-select interest=ai）→ **Day0のみ1通配信・intro抑制・next=Day1相当** を確認し enrollment を completed で停止。
 > Day3 は「AIを魔法の道具にしない／個人情報を入れない／最終判断は人」を軸に、初心者が**怖がらず・でも危険な使い方をしない**ことを狙う。
 
 ## シナリオ定義（本文確定後に発番・投入）
