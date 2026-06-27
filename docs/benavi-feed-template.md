@@ -81,6 +81,8 @@ beナビが関わる「ナースまつり」では、現場で人気の物販や
 
 ## 4. event（イベント情報）導入ミニシナリオ 本文案
 
+> ⚠️ **本番は本文確定済み**。正本＝[benavi-event-scenario.md](benavi-event-scenario.md)（“つながるきっかけ”を前面・署名 ——be Navigator）。以下は初期の設計案（プレースホルダ枠つき）で、本番文面とは異なる。
+
 - route key=`event` / `trigger_tag_id`=**R:イベント** `91733e50-e511-4353-96f5-906c54230f95`
 - 2ステップ（Day0/Day2）。delay_minutes=`0 / 2880`。
 - リマインド／当日／終了後フォローは**層2の scheduled broadcast**で（§5）。
