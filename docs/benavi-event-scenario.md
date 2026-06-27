@@ -1,4 +1,6 @@
-# beナビ event ルート 導入ミニシナリオ（2日間・情報購読型）— 【本文確定・本番化作業中】
+# beナビ event ルート 導入ミニシナリオ（2日間・情報購読型）— 【本番稼働中】
+
+> **適用記録（2026-06-27 JST）**：D1 `line-harness` へ `event_onboarding.sql` 適用（scenario `3fc03f4a…` + steps×2・changes4）。backup `d1-backups/line-harness_pre-event_20260627-164512.sql`。E2E（route-select interest=event）→ **Day0のみ1通配信・intro抑制・next=Day2相当(+2880分)** を確認し enrollment を completed で停止。deploy 不要（ROUTE_MAP に `event` 実装済・intro抑制は scenario 投入で自動ON）。
 
 > route key=`event`（タグ `R:イベント`）。フィード型2層モデルの「層1＝導入ミニシナリオ」。設計の母体は [benavi-feed-template.md](benavi-feed-template.md)。
 > **コンセプト**：「イベント告知LINE」ではなく、**“学び”と“人との出会い”につながる場の情報が届くLINE**。be Navigatorのイベント（ナースまつり・セミナー・勉強会・オフ会）に共通する価値＝**同じ想いを持つ仲間と出会えること**を温かく伝える。
@@ -55,12 +57,12 @@ https://liff.line.me/2010453320-O9UsF9z4?page=hub
 
 ---
 
-## 本番化フロー（進行中）
+## 本番化フロー（実施済み・2026-06-27）
 1. ✅ 本文FIX（本書）／固定UUID発番
-2. ⏳ `event_onboarding.sql` 生成 → Claudeレビュー
-3. 🔴 事前検証 → export backup → D1適用（オーナーGo）
-4. 🔴 E2E（route-select interest=event → Day0のみ／intro抑制）→ enrollment completed 停止
-5. 本書を「本番稼働中」へ更新＋適用記録
+2. ✅ `event_onboarding.sql` 生成 → Claudeレビュー（本文↔md一致2/2・UUID衝突0）
+3. ✅ 事前検証 → export backup → D1適用（オーナーGo・changes4）
+4. ✅ E2E（Day0のみ1通・intro抑制）→ enrollment completed 停止
+5. ✅ 本書を「本番稼働中」へ更新＋適用記録
 
 ## 残課題（運用・任意）
 - 層2 broadcast 運用開始（告知／リマインド／当日／終了後フォロー・禁止帯ガード・価値8:告知2）。
