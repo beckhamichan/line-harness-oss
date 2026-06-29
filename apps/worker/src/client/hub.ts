@@ -5,7 +5,7 @@
  * 1. liff.getProfile() で userId を取得
  * 2. 会員かどうかを自己申告
  * 3. 「ようこそ」体験（船長の歓迎）＋ 7つの目的カードを表示（単一選択）
- * 4. 1つ選んで「この航海に出航する」→ POST /api/liff/route-select { lineUserId, interest, isMember }
+ * 4. 1つ選んで「この航海に出航する」→ POST /api/liff/route-select { lineUserId, displayName, pictureUrl, interest, isMember }
  *    → サーバーが 興味タグ(I:)＋ルートタグ(R:) を付与（R: の tag_added で対応ルートが自動開始）
  * 5. 応答 data.nextPage === 'diagnosis'（心電図）なら ?page=diagnosis へ遷移、
  *    それ以外は完了画面を表示して liff.closeWindow()
@@ -40,7 +40,7 @@ const HUB_CARDS: HubCard[] = [
   { key: 'event', emoji: '🎉', title: 'イベント情報がほしい', desc: 'ナースまつり・セミナーの最新案内' },
 ];
 
-let hubProfile: { userId: string; displayName: string } | null = null;
+let hubProfile: { userId: string; displayName: string; pictureUrl?: string } | null = null;
 let hubSelected: RouteKey | null = null;
 let hubIsMember: boolean | null = null;
 let hubSubmitting = false;
@@ -160,7 +160,13 @@ async function submitRoute(): Promise<void> {
     const res = await fetch('/api/liff/route-select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineUserId: hubProfile.userId, interest: selected, isMember: hubIsMember }),
+      body: JSON.stringify({
+        lineUserId: hubProfile.userId,
+        displayName: hubProfile.displayName,
+        pictureUrl: hubProfile.pictureUrl ?? null,
+        interest: selected,
+        isMember: hubIsMember,
+      }),
     });
     const json = (await res.json().catch(() => null)) as
       | { success?: boolean; data?: { interest: string; label?: string; nextPage?: string | null } }
@@ -168,6 +174,11 @@ async function submitRoute(): Promise<void> {
 
     const nextPage = json?.data?.nextPage ?? null;
     const label = json?.data?.label ?? HUB_CARDS.find((c) => c.key === selected)?.title ?? '';
+
+    if (!res.ok || json?.success !== true) {
+      renderDone(label, true, hubIsMember === true);
+      return;
+    }
 
     if (nextPage === 'diagnosis') {
       // 心電図ルート：そのまま診断へ（既存フロー）。liffId 等のクエリは保持。

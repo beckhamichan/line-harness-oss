@@ -3,6 +3,7 @@ import { describe, expect, test, beforeEach, vi } from 'vitest';
 // --- module mocks (must be defined before importing the route) ---
 const dbMocks = {
   getFriendByLineUserId: vi.fn(),
+  upsertFriend: vi.fn(),
   getLineAccountById: vi.fn(),
   enrollFriendInScenario: vi.fn(),
   getScenarios: vi.fn(),
@@ -158,6 +159,7 @@ function postDiagnosis(body: unknown, db: unknown) {
 }
 
 const FRIEND = { id: 'friend-1', line_account_id: null, line_user_id: 'U1' };
+const NEW_FRIEND = { id: 'friend-new', line_account_id: null, line_user_id: 'U-new' };
 const MEMBER_TAG = '5e3a934c-3d42-4409-a359-6a254588fb72';
 const CIRC_I_TAG = 'b3545378-3204-4376-bc04-3b26bcaa0904';
 const CIRC_R_TAG = 'c17ecb3c-1e3b-45bb-8f9d-cd3e56f78f57';
@@ -168,6 +170,7 @@ describe('POST /api/liff/route-select', () => {
     attachMock.mockClear();
     pushMock.mockClear();
     dbMocks.getFriendByLineUserId.mockReset();
+    dbMocks.upsertFriend.mockReset();
     dbMocks.getLineAccountById.mockReset();
     dbMocks.getLineAccountById.mockResolvedValue(null);
     dbMocks.enrollFriendInScenario.mockReset();
@@ -189,10 +192,70 @@ describe('POST /api/liff/route-select', () => {
     expect(res.status).toBe(400);
   });
 
-  test('friend が見つからなければ 404', async () => {
+  test('friend 未存在の会員は upsert して M/R/I タグを付与し、Rタグ経由の enroll は作らない', async () => {
     dbMocks.getFriendByLineUserId.mockResolvedValue(null);
-    const res = await postRouteSelect({ lineUserId: 'U1', interest: 'ecg' }, makeDb('{}'));
-    expect(res.status).toBe(404);
+    dbMocks.upsertFriend.mockResolvedValue(NEW_FRIEND);
+    const db = makeDb('{}', { activeScenarioTagIds: [CIRC_R_TAG] });
+    const res = await postRouteSelect(
+      {
+        lineUserId: 'U-new',
+        displayName: 'New User',
+        pictureUrl: 'https://example.com/p.png',
+        interest: 'circ',
+        isMember: true,
+      },
+      db,
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.upsertFriend).toHaveBeenCalledWith(db, {
+      lineUserId: 'U-new',
+      displayName: 'New User',
+      pictureUrl: 'https://example.com/p.png',
+      statusMessage: null,
+    });
+    expect(db._state.friendTags).toEqual(
+      expect.arrayContaining([
+        { friend_id: NEW_FRIEND.id, tag_id: MEMBER_TAG },
+        { friend_id: NEW_FRIEND.id, tag_id: CIRC_I_TAG },
+        { friend_id: NEW_FRIEND.id, tag_id: CIRC_R_TAG },
+      ]),
+    );
+    expect(db._state.friendScenarios).toEqual([]);
+    expect(attachMock).toHaveBeenLastCalledWith(db, NEW_FRIEND.id, CIRC_R_TAG, { enroll: false });
+  });
+
+  test('friend 未存在の非会員は upsert して R/I タグを付与し、Rタグ経由の enroll を作る', async () => {
+    dbMocks.getFriendByLineUserId.mockResolvedValue(null);
+    dbMocks.upsertFriend.mockResolvedValue(NEW_FRIEND);
+    const db = makeDb('{}', { activeScenarioTagIds: [CIRC_R_TAG] });
+    const res = await postRouteSelect(
+      {
+        lineUserId: 'U-new',
+        displayName: '',
+        pictureUrl: null,
+        interest: 'circ',
+      },
+      db,
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.upsertFriend).toHaveBeenCalledWith(db, {
+      lineUserId: 'U-new',
+      displayName: 'Unknown',
+      pictureUrl: null,
+      statusMessage: null,
+    });
+    expect(db._state.friendTags).toEqual(
+      expect.arrayContaining([
+        { friend_id: NEW_FRIEND.id, tag_id: CIRC_I_TAG },
+        { friend_id: NEW_FRIEND.id, tag_id: CIRC_R_TAG },
+      ]),
+    );
+    expect(db._state.friendTags).not.toContainEqual({ friend_id: NEW_FRIEND.id, tag_id: MEMBER_TAG });
+    expect(db._state.friendScenarios).toEqual([
+      { friend_id: NEW_FRIEND.id, scenario_id: `scenario-for-${CIRC_R_TAG}` },
+    ]);
   });
 
   test('ecg は 200・nextPage=diagnosis・I/R 2タグ付与', async () => {
@@ -214,6 +277,27 @@ describe('POST /api/liff/route-select', () => {
         text: expect.stringContaining('さっそく、あなたの航海マップ（60秒診断）から始めましょう'),
       },
     ]);
+  });
+
+  test('既存 friend では upsert せず既存レコードを尊重する', async () => {
+    dbMocks.getFriendByLineUserId.mockResolvedValue(FRIEND);
+    const db = makeDb('{"interests":["ecg"],"route_primary":"ecg"}');
+    const res = await postRouteSelect(
+      {
+        lineUserId: 'U1',
+        displayName: 'Changed Name',
+        pictureUrl: 'https://example.com/changed.png',
+        interest: 'ai',
+      },
+      db,
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.upsertFriend).not.toHaveBeenCalled();
+    const update = db._updates.find((u) => u.sql.includes('UPDATE friends SET metadata'));
+    const merged = JSON.parse(update!.args[0] as string) as { interests: string[]; route_primary: string };
+    expect(merged.interests).toEqual(['ecg', 'ai']);
+    expect(merged.route_primary).toBe('ecg');
   });
 
   test('ecg 以外（circ）は 200・nextPage=null', async () => {
@@ -352,6 +436,7 @@ describe('POST /api/liff/diagnosis', () => {
     pushMock.mockClear();
     dbMocks.getFriendByLineUserId.mockReset();
     dbMocks.getFriendByLineUserId.mockResolvedValue(FRIEND);
+    dbMocks.upsertFriend.mockReset();
     dbMocks.getLineAccountById.mockReset();
     dbMocks.getLineAccountById.mockResolvedValue(null);
     dbMocks.enrollFriendInScenario.mockReset();
@@ -370,6 +455,39 @@ describe('POST /api/liff/diagnosis', () => {
     expect(res.status).toBe(200);
     expect(db._state.friendScenarios).toEqual([]);
     expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+    expect(pushMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('friend 未存在なら upsert して診断結果を保存し、非会員は7日間オンボーディング enroll を作る', async () => {
+    dbMocks.getFriendByLineUserId.mockResolvedValue(null);
+    dbMocks.upsertFriend.mockResolvedValue(NEW_FRIEND);
+    const db = makeDb('{}');
+    const res = await postDiagnosis(
+      {
+        lineUserId: 'U-new',
+        displayName: 'New User',
+        pictureUrl: 'https://example.com/p.png',
+        type: 'F',
+        scores: { F: 3 },
+      },
+      db,
+    );
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.upsertFriend).toHaveBeenCalledWith(db, {
+      lineUserId: 'U-new',
+      displayName: 'New User',
+      pictureUrl: 'https://example.com/p.png',
+      statusMessage: null,
+    });
+    expect(JSON.parse(db._state.metadata)).toMatchObject({
+      diagnosis_type: 'F',
+      diagnosis_label: 'コツコツ基礎固めタイプ',
+      diagnosis_scores: { F: 3 },
+    });
+    expect(db._state.friendScenarios).toEqual([
+      { friend_id: NEW_FRIEND.id, scenario_id: DX_ONBOARDING_SCENARIO_ID },
+    ]);
     expect(pushMock).toHaveBeenCalledTimes(1);
   });
 
