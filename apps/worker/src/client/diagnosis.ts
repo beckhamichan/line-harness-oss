@@ -5,7 +5,7 @@
  * 1. liff.getProfile() で userId を取得
  * 2. 全6問に回答（各選択肢が F/P/V/L にポイント配分）
  * 3. クライアントで最高得点タイプを判定（同点は F→L→P→V 優先）
- * 4. POST /api/liff/diagnosis { lineUserId, type, scores } を送信
+ * 4. POST /api/liff/diagnosis { lineUserId, displayName, pictureUrl, type, scores } を送信
  *    → サーバーが metadata 保存・結果メッセージ Push・シナリオ enroll を担う
  * 5. 結果画面を表示（タイプ説明＋おすすめ）→「LINEに戻る」で closeWindow()
  *
@@ -157,7 +157,7 @@ const CHOICE_KEYS = ['A', 'B', 'C', 'D'];
 // ── 状態 ──
 let dxIndex = 0;
 let dxScores: Record<TypeKey, number> = { F: 0, P: 0, V: 0, L: 0 };
-let dxProfile: { userId: string; displayName: string } | null = null;
+let dxProfile: { userId: string; displayName: string; pictureUrl?: string } | null = null;
 let dxSubmitting = false;
 
 function getApp(): HTMLElement {
@@ -252,6 +252,8 @@ async function finish(): Promise<void> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           lineUserId: dxProfile.userId,
+          displayName: dxProfile.displayName,
+          pictureUrl: dxProfile.pictureUrl ?? null,
           type,
           scores: dxScores,
         }),

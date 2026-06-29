@@ -1862,6 +1862,8 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
       lineUserId?: string;
       type?: string;
       scores?: Record<string, number>;
+      displayName?: string;
+      pictureUrl?: string | null;
     }>();
 
     const lineUserId = body.lineUserId;
@@ -1870,9 +1872,14 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
       return c.json({ success: false, error: 'lineUserId and valid type are required' }, 400);
     }
 
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    let friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      friend = await upsertFriend(db, {
+        lineUserId,
+        displayName: body.displayName || 'Unknown',
+        pictureUrl: body.pictureUrl ?? null,
+        statusMessage: null,
+      });
     }
 
     const meta = DX_TYPE_META[type];
@@ -1992,7 +1999,13 @@ async function hasActiveTagAddedScenario(db: D1Database, tagId: string): Promise
 liffRoutes.post('/api/liff/route-select', async (c) => {
   try {
     const db = c.env.DB;
-    const body = await c.req.json<{ lineUserId?: string; interest?: string; isMember?: boolean }>();
+    const body = await c.req.json<{
+      lineUserId?: string;
+      interest?: string;
+      isMember?: boolean;
+      displayName?: string;
+      pictureUrl?: string | null;
+    }>();
 
     const lineUserId = body.lineUserId;
     const interest = body.interest;
@@ -2001,9 +2014,14 @@ liffRoutes.post('/api/liff/route-select', async (c) => {
       return c.json({ success: false, error: 'lineUserId and valid interest are required' }, 400);
     }
 
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    let friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      friend = await upsertFriend(db, {
+        lineUserId,
+        displayName: body.displayName || 'Unknown',
+        pictureUrl: body.pictureUrl ?? null,
+        statusMessage: null,
+      });
     }
 
     const route = ROUTE_MAP[interest];
