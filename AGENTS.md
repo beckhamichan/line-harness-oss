@@ -14,7 +14,7 @@
 - **`main` へ直接 push しない。** 必ずブランチを切り、PR を作って `.github/PULL_REQUEST_TEMPLATE.md` を埋め、Issue 番号を紐付けます。
 - 実装したら **vitest を書き／更新**し、`pnpm --filter <pkg> typecheck` と `test` を通してから PR を出します。
 - 安全制約（最優先・絶対）:
-  - 配信禁止帯 **JST 21:00〜翌8:00** は配信しない（`packages/db/src/scenario-schedule.ts` の `clampToDeliveryWindow` を必ず経由）。
+  - 配信禁止帯 **JST 23:00〜翌7:00** は配信しない（`packages/db/src/scenario-schedule.ts` の `clampToDeliveryWindow` を必ず経由）。
   - 二重送信・誤アカウント送信・大量誤送信を生まない。
   - トークン・チャネルシークレット・アカウントID・顧客データを差分や PR に含めない。
 - 詳細は `CLAUDE.md` と `docs/codex-operations.md` に従います。
