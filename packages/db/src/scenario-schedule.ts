@@ -55,6 +55,17 @@ export function clampToDeliveryWindow(date: Date, rand: () => number = Math.rand
   return result;
 }
 
+/**
+ * 送信時ガード用の判定：与えられた時刻が配信可能時間帯（JST 7:00〜23:00）内なら true。
+ * clampToDeliveryWindow は次回予約の計算にしか効かないため、cron停止→深夜復帰時に
+ * 滞留分が禁止帯へ流れるのを送信直前に防ぐ用途で使う。
+ * 入力 date は clampToDeliveryWindow と同じ「JST clock-time を表す Date」前提。
+ */
+export function isWithinDeliveryWindow(date: Date): boolean {
+  const hour = date.getHours();
+  return hour >= QUIET_END_HOUR && hour < QUIET_START_HOUR;
+}
+
 function addDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + days);

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { evaluateCondition, expandVariables, isSupportedConditionType, SUPPORTED_CONDITION_TYPES } from './step-delivery.js';
+import { evaluateCondition, expandVariables, isSupportedConditionType, SUPPORTED_CONDITION_TYPES, processStepDeliveries } from './step-delivery.js';
 
 /**
  * Regression coverage for OSS issue #120 — scenario step
@@ -255,5 +255,70 @@ describe('expandVariables — {{type_tip:dayN}} 診断タイプ別差し込み',
       metadata: { diagnosis_label: '語れるようになりたいタイプ' },
     });
     expect(out).toBe('あなたは語れるようになりたいタイプです');
+  });
+});
+
+/**
+ * 送信時ガード（Issue #31）— cron停止→深夜復帰時に滞留分が禁止帯(JST 23:00〜7:00)へ
+ * 一斉送信されるのを防ぐ。禁止帯の間は DB にも触れず即 return する。
+ * nowJst はローカル時刻コンストラクタで生成し、実行環境の TZ に依存しない。
+ */
+describe('processStepDeliveries — 送信時ガード（禁止帯では送信しない）', () => {
+  const unusedLineClient = {} as never; // ガード検証では LINE クライアントに到達しない
+
+  it('禁止帯(0:55)では DB に一切触れず return する', async () => {
+    const db = new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error('禁止帯中に DB へアクセスしてはいけない');
+        },
+      },
+    ) as unknown as D1Database;
+    const quiet = new Date(2026, 6, 3, 0, 55); // 2026-07-03 00:55（インシデント再現時刻）
+    await expect(processStepDeliveries(db, unusedLineClient, undefined, quiet)).resolves.toBeUndefined();
+  });
+
+  it('禁止帯(23:00)でも同様に return する', async () => {
+    const db = new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error('禁止帯中に DB へアクセスしてはいけない');
+        },
+      },
+    ) as unknown as D1Database;
+    const quiet = new Date(2026, 6, 3, 23, 0);
+    await expect(processStepDeliveries(db, unusedLineClient, undefined, quiet)).resolves.toBeUndefined();
+  });
+
+  it('窓内(12:00)は従来どおり期限到来クエリまで進む', async () => {
+    let queried = false;
+    const db = {
+      prepare: () => ({
+        all: async () => {
+          queried = true;
+          return { results: [] };
+        },
+      }),
+    } as unknown as D1Database;
+    const noon = new Date(2026, 6, 3, 12, 0);
+    await processStepDeliveries(db, unusedLineClient, undefined, noon);
+    expect(queried).toBe(true);
+  });
+
+  it('窓の開始(7:00)から送信可能', async () => {
+    let queried = false;
+    const db = {
+      prepare: () => ({
+        all: async () => {
+          queried = true;
+          return { results: [] };
+        },
+      }),
+    } as unknown as D1Database;
+    const morning = new Date(2026, 6, 3, 7, 0);
+    await processStepDeliveries(db, unusedLineClient, undefined, morning);
+    expect(queried).toBe(true);
   });
 });
