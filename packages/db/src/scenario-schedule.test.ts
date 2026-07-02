@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeNextDeliveryAt, clampToDeliveryWindow, type ScenarioRow, type StepRow } from './scenario-schedule.js';
+import { computeNextDeliveryAt, clampToDeliveryWindow, isWithinDeliveryWindow, type ScenarioRow, type StepRow } from './scenario-schedule.js';
 
 const enrolledAt = new Date('2026-05-09T14:32:00+09:00');
 const now = new Date('2026-05-09T14:32:00+09:00');
@@ -147,5 +147,32 @@ describe('clampToDeliveryWindow（配信時間帯ガード JST 23:00〜翌7:00�
       expect(r.getTime()).toBeGreaterThanOrEqual(lo);
       expect(r.getTime()).toBeLessThanOrEqual(hi);
     }
+  });
+});
+
+// ※ このテストも TZ=JST 前提（clampToDeliveryWindow テストと同じ規約）。
+describe('isWithinDeliveryWindow（送信時ガード判定 JST 7:00〜23:00）', () => {
+  it('日中(12:00)は true', () => {
+    expect(isWithinDeliveryWindow(new Date('2026-07-03T12:00:00+09:00'))).toBe(true);
+  });
+
+  it('7:00 ちょうどは true（窓の開始）', () => {
+    expect(isWithinDeliveryWindow(new Date('2026-07-03T07:00:00+09:00'))).toBe(true);
+  });
+
+  it('22:59 は true（窓の終端直前）', () => {
+    expect(isWithinDeliveryWindow(new Date('2026-07-03T22:59:59+09:00'))).toBe(true);
+  });
+
+  it('23:00 ちょうどは false（禁止帯開始）', () => {
+    expect(isWithinDeliveryWindow(new Date('2026-07-03T23:00:00+09:00'))).toBe(false);
+  });
+
+  it('深夜 0:55 は false（2026-07-03 インシデントの再現時刻）', () => {
+    expect(isWithinDeliveryWindow(new Date('2026-07-03T00:55:28+09:00'))).toBe(false);
+  });
+
+  it('6:59 は false（禁止帯の終端）', () => {
+    expect(isWithinDeliveryWindow(new Date('2026-07-03T06:59:59+09:00'))).toBe(false);
   });
 });
