@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { type PointerEvent, type SyntheticEvent, useRef, useState } from 'react'
 import { tapImageMessage } from '@line-crm/line-sdk'
+import { type Point, type PercentRect, rectFromDrag } from './tap-image-geometry'
 
 interface TapAreaInput {
   label: string
@@ -21,6 +22,28 @@ function emptyTapArea(): TapAreaInput {
   return { label: '', topPercent: '', leftPercent: '', widthPercent: '', heightPercent: '', uri: '' }
 }
 
+function areaFromRect(rect: PercentRect): TapAreaInput {
+  return {
+    ...emptyTapArea(),
+    topPercent: String(rect.topPercent),
+    leftPercent: String(rect.leftPercent),
+    widthPercent: String(rect.widthPercent),
+    heightPercent: String(rect.heightPercent),
+  }
+}
+
+function numericAreaRect(area: TapAreaInput): PercentRect | null {
+  const topPercent = Number(area.topPercent)
+  const leftPercent = Number(area.leftPercent)
+  const widthPercent = Number(area.widthPercent)
+  const heightPercent = Number(area.heightPercent)
+  if ([topPercent, leftPercent, widthPercent, heightPercent].some((value) => !Number.isFinite(value))) {
+    return null
+  }
+  if (widthPercent <= 0 || heightPercent <= 0) return null
+  return { topPercent, leftPercent, widthPercent, heightPercent }
+}
+
 export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapImageBuilderProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [imageUrl, setImageUrl] = useState('')
@@ -28,15 +51,125 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
   const [aspectRatio, setAspectRatio] = useState('1:1')
   const [areas, setAreas] = useState<TapAreaInput[]>([emptyTapArea()])
   const [error, setError] = useState('')
+  const [selectedAreaIndex, setSelectedAreaIndex] = useState<number | null>(null)
+  const [imageReady, setImageReady] = useState(false)
+  const [imageLoadFailed, setImageLoadFailed] = useState(false)
+  const [dragStart, setDragStart] = useState<Point | null>(null)
+  const [dragPreview, setDragPreview] = useState<PercentRect | null>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+
+  const resetImageState = (nextImageUrl: string) => {
+    setImageUrl(nextImageUrl)
+    setImageReady(false)
+    setImageLoadFailed(false)
+    setDragStart(null)
+    setDragPreview(null)
+  }
 
   const updateArea = (index: number, patch: Partial<TapAreaInput>) => {
     setAreas((prev) => prev.map((area, i) => (i === index ? { ...area, ...patch } : area)))
   }
 
-  const addArea = () => setAreas((prev) => [...prev, emptyTapArea()])
+  const addArea = () => {
+    setAreas((prev) => {
+      setSelectedAreaIndex(prev.length)
+      return [...prev, emptyTapArea()]
+    })
+  }
 
   const removeArea = (index: number) => {
     setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)))
+    setSelectedAreaIndex((current) => {
+      if (current === null) return null
+      if (current === index) return null
+      return current > index ? current - 1 : current
+    })
+  }
+
+  const overlayPoint = (event: PointerEvent<HTMLDivElement>): Point | null => {
+    const rect = overlayRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  }
+
+  const imageSize = (): { width: number; height: number } => {
+    const rect = overlayRef.current?.getBoundingClientRect()
+    return { width: rect?.width ?? 0, height: rect?.height ?? 0 }
+  }
+
+  const handleOverlayPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (!imageReady || imageLoadFailed) return
+    const point = overlayPoint(event)
+    if (!point) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setSelectedAreaIndex(null)
+    setDragStart(point)
+    setDragPreview(rectFromDrag(point, point, imageSize()))
+  }
+
+  const handleOverlayPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragStart) return
+    const point = overlayPoint(event)
+    if (!point) return
+    setDragPreview(rectFromDrag(dragStart, point, imageSize()))
+  }
+
+  const finishDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragStart) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+
+    const end = overlayPoint(event)
+    setDragStart(null)
+    setDragPreview(null)
+    if (!end) return
+
+    const dx = end.x - dragStart.x
+    const dy = end.y - dragStart.y
+    const movedEnough = Math.sqrt(dx * dx + dy * dy) >= 4
+    if (!movedEnough) {
+      setSelectedAreaIndex(null)
+      return
+    }
+
+    const rect = rectFromDrag(dragStart, end, imageSize())
+    if (rect.widthPercent <= 0 || rect.heightPercent <= 0) return
+
+    setAreas((prev) => {
+      const nextArea = areaFromRect(rect)
+      const emptyIndex = prev.findIndex(
+        (area) =>
+          !area.label.trim() &&
+          !area.uri.trim() &&
+          !area.topPercent.trim() &&
+          !area.leftPercent.trim() &&
+          !area.widthPercent.trim() &&
+          !area.heightPercent.trim(),
+      )
+      if (emptyIndex >= 0) {
+        setSelectedAreaIndex(emptyIndex)
+        return prev.map((area, index) => (index === emptyIndex ? nextArea : area))
+      }
+      setSelectedAreaIndex(prev.length)
+      return [...prev, nextArea]
+    })
+  }
+
+  const handleImageLoad = (event: SyntheticEvent<HTMLImageElement>) => {
+    setImageReady(true)
+    setImageLoadFailed(false)
+    const { naturalWidth, naturalHeight } = event.currentTarget
+    if (naturalWidth > 0 && naturalHeight > 0) {
+      setAspectRatio(`${naturalWidth}:${naturalHeight}`)
+    }
+  }
+
+  const handleImageError = () => {
+    setImageReady(false)
+    setImageLoadFailed(true)
+    setDragStart(null)
+    setDragPreview(null)
   }
 
   const handleGenerate = () => {
@@ -97,7 +230,7 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
               placeholder="https://example.com/banner.png"
               value={imageUrl}
-              onChange={(e) => setImageUrl(e.target.value)}
+              onChange={(e) => resetImageState(e.target.value)}
             />
           </div>
 
@@ -127,10 +260,127 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
           </div>
 
           <div>
+            <label className="block text-xs text-gray-500 mb-2">画像プレビュー</label>
+            <div className="relative overflow-hidden rounded-md border border-gray-300 bg-white">
+              {imageUrl.trim() ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imageUrl.trim()}
+                    alt={altText.trim() || 'タップ領域プレビュー'}
+                    className="block w-full select-none"
+                    draggable={false}
+                    onLoad={handleImageLoad}
+                    onError={handleImageError}
+                  />
+                  <div
+                    ref={overlayRef}
+                    className="absolute inset-0 touch-none cursor-crosshair"
+                    onPointerDown={handleOverlayPointerDown}
+                    onPointerMove={handleOverlayPointerMove}
+                    onPointerUp={finishDrag}
+                    onPointerCancel={finishDrag}
+                  >
+                    {areas.map((area, index) => {
+                      const rect = numericAreaRect(area)
+                      if (!rect) return null
+                      const isSelected = selectedAreaIndex === index
+                      return (
+                        <button
+                          key={index}
+                          type="button"
+                          className={`absolute border-2 bg-green-400/20 focus:outline-none ${
+                            isSelected ? 'border-blue-600 ring-2 ring-blue-200' : 'border-green-600'
+                          }`}
+                          style={{
+                            top: `${rect.topPercent}%`,
+                            left: `${rect.leftPercent}%`,
+                            width: `${rect.widthPercent}%`,
+                            height: `${rect.heightPercent}%`,
+                          }}
+                          onPointerDown={(event) => {
+                            event.stopPropagation()
+                            setSelectedAreaIndex(index)
+                          }}
+                          aria-label={`タップ領域 ${index + 1}`}
+                        />
+                      )
+                    })}
+                    {dragPreview && (
+                      <div
+                        className="absolute border-2 border-dashed border-blue-600 bg-blue-400/20"
+                        style={{
+                          top: `${dragPreview.topPercent}%`,
+                          left: `${dragPreview.leftPercent}%`,
+                          width: `${dragPreview.widthPercent}%`,
+                          height: `${dragPreview.heightPercent}%`,
+                        }}
+                      />
+                    )}
+                  </div>
+                  {!imageReady && !imageLoadFailed && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-white/80 px-3 text-center text-xs text-gray-500">
+                      画像を読み込んでいます
+                    </div>
+                  )}
+                  {imageLoadFailed && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-white/90 px-3 text-center text-xs text-red-600">
+                      画像を読み込めませんでした。URLを確認してください。
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex min-h-40 items-center justify-center px-3 text-center text-xs text-gray-500">
+                  画像URLを入力すると、ここでドラッグしてタップ領域を作成できます。
+                </div>
+              )}
+            </div>
+          </div>
+
+          {selectedAreaIndex !== null && areas[selectedAreaIndex] && (
+            <div className="grid gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 sm:grid-cols-[1fr_2fr_auto]">
+              <div>
+                <label className="block text-xs text-blue-700 mb-1">選択中のラベル</label>
+                <input
+                  type="text"
+                  className="w-full border border-blue-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="ラベル"
+                  value={areas[selectedAreaIndex].label}
+                  onChange={(e) => updateArea(selectedAreaIndex, { label: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-blue-700 mb-1">選択中のリンク先URL</label>
+                <input
+                  type="url"
+                  className="w-full border border-blue-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="https://example.com/"
+                  value={areas[selectedAreaIndex].uri}
+                  onChange={(e) => updateArea(selectedAreaIndex, { uri: e.target.value })}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => removeArea(selectedAreaIndex)}
+                disabled={areas.length <= 1}
+                className="self-end px-3 py-1.5 text-xs text-red-600 disabled:opacity-30"
+              >
+                削除
+              </button>
+            </div>
+          )}
+
+          <div>
             <label className="block text-xs text-gray-500 mb-2">タップ領域</label>
             <div className="space-y-2">
               {areas.map((area, index) => (
-                <div key={index} className="grid grid-cols-2 sm:grid-cols-6 gap-1.5 items-center border-b border-gray-200 pb-2">
+                <div
+                  key={index}
+                  className={`grid grid-cols-2 sm:grid-cols-6 gap-1.5 items-center border-b pb-2 ${
+                    selectedAreaIndex === index ? 'border-blue-300 bg-blue-50/60' : 'border-gray-200'
+                  }`}
+                  onFocus={() => setSelectedAreaIndex(index)}
+                >
                   <input
                     type="text"
                     placeholder="ラベル"
