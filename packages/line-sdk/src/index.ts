@@ -20,6 +20,8 @@ export {
   productCard,
   receiptMessage,
 } from './messages.js';
+export { tapImageMessage } from './tap-image.js';
+export type { TapImageArea, TapImageOptions } from './tap-image.js';
 export type {
   AudioEventMessage,
   BroadcastRequest,
