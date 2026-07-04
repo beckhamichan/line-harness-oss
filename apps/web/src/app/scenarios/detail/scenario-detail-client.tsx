@@ -14,6 +14,7 @@ import ScheduleInput, {
   type ScheduleValue,
 } from '@/components/scenarios/schedule-input'
 import BulkPreviewModal from '@/components/scenarios/bulk-preview-modal'
+import TapImageBuilder from '@/components/scenarios/tap-image-builder'
 
 type ScenarioWithSteps = Scenario & { steps: ScenarioStep[] }
 
@@ -653,6 +654,12 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                       ))}
                     </select>
                   </div>
+                  {stepForm.messageType === 'flex' && (
+                    <TapImageBuilder
+                      onGenerate={(json) => setStepForm({ ...stepForm, messageContent: json })}
+                      hasExistingContent={stepForm.messageContent.trim() !== ''}
+                    />
+                  )}
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">メッセージ内容 <span className="text-red-500">*</span></label>
                     <textarea
