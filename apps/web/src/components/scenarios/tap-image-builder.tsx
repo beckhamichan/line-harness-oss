@@ -22,6 +22,17 @@ function emptyTapArea(): TapAreaInput {
   return { label: '', topPercent: '', leftPercent: '', widthPercent: '', heightPercent: '', uri: '' }
 }
 
+function isBlankArea(area: TapAreaInput): boolean {
+  return (
+    !area.label.trim() &&
+    !area.uri.trim() &&
+    !area.topPercent.trim() &&
+    !area.leftPercent.trim() &&
+    !area.widthPercent.trim() &&
+    !area.heightPercent.trim()
+  )
+}
+
 function areaFromRect(rect: PercentRect): TapAreaInput {
   return {
     ...emptyTapArea(),
@@ -71,19 +82,18 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
   }
 
   const addArea = () => {
-    setAreas((prev) => {
-      setSelectedAreaIndex(prev.length)
-      return [...prev, emptyTapArea()]
-    })
+    setSelectedAreaIndex(areas.length)
+    setAreas((prev) => [...prev, emptyTapArea()])
   }
 
   const removeArea = (index: number) => {
-    setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)))
     setSelectedAreaIndex((current) => {
-      if (current === null) return null
-      if (current === index) return null
+      if (current === null || current === index) return null
       return current > index ? current - 1 : current
     })
+    // 最後の1件を削除するときは空行1つにリセットして、数値入力の行が常に残るようにする。
+    // これにより「唯一の(＝最初に作った)矩形」も削除できる。
+    setAreas((prev) => (prev.length <= 1 ? [emptyTapArea()] : prev.filter((_, i) => i !== index)))
   }
 
   const overlayPoint = (event: PointerEvent<HTMLDivElement>): Point | null => {
@@ -136,24 +146,17 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
     const rect = rectFromDrag(dragStart, end, imageSize())
     if (rect.widthPercent <= 0 || rect.heightPercent <= 0) return
 
-    setAreas((prev) => {
-      const nextArea = areaFromRect(rect)
-      const emptyIndex = prev.findIndex(
-        (area) =>
-          !area.label.trim() &&
-          !area.uri.trim() &&
-          !area.topPercent.trim() &&
-          !area.leftPercent.trim() &&
-          !area.widthPercent.trim() &&
-          !area.heightPercent.trim(),
-      )
-      if (emptyIndex >= 0) {
-        setSelectedAreaIndex(emptyIndex)
-        return prev.map((area, index) => (index === emptyIndex ? nextArea : area))
-      }
-      setSelectedAreaIndex(prev.length)
-      return [...prev, nextArea]
-    })
+    const nextArea = areaFromRect(rect)
+    // 空行があればそこに入れ、無ければ末尾に追加。選択インデックスは setAreas の
+    // updater 外で確定させる（updater を純粋に保ち、選択が確実に更新されるようにする）。
+    const emptyIndex = areas.findIndex(isBlankArea)
+    if (emptyIndex >= 0) {
+      setAreas((prev) => prev.map((area, index) => (index === emptyIndex ? nextArea : area)))
+      setSelectedAreaIndex(emptyIndex)
+    } else {
+      setAreas((prev) => [...prev, nextArea])
+      setSelectedAreaIndex(areas.length)
+    }
   }
 
   const handleImageLoad = (event: SyntheticEvent<HTMLImageElement>) => {
@@ -362,8 +365,7 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
               <button
                 type="button"
                 onClick={() => removeArea(selectedAreaIndex)}
-                disabled={areas.length <= 1}
-                className="self-end px-3 py-1.5 text-xs text-red-600 disabled:opacity-30"
+                className="self-end px-3 py-1.5 text-xs text-red-600"
               >
                 削除
               </button>
@@ -427,8 +429,7 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
                     <button
                       type="button"
                       onClick={() => removeArea(index)}
-                      disabled={areas.length <= 1}
-                      className="px-2 text-xs text-red-600 disabled:opacity-30"
+                      className="px-2 text-xs text-red-600"
                     >
                       削除
                     </button>
