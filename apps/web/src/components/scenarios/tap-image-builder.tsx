@@ -16,6 +16,9 @@ interface TapAreaInput {
 interface TapImageBuilderProps {
   onGenerate: (messageContentJson: string) => void
   hasExistingContent: boolean
+  title?: string
+  description?: string
+  defaultOpen?: boolean
 }
 
 function emptyTapArea(): TapAreaInput {
@@ -55,8 +58,14 @@ function numericAreaRect(area: TapAreaInput): PercentRect | null {
   return { topPercent, leftPercent, widthPercent, heightPercent }
 }
 
-export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapImageBuilderProps) {
-  const [isOpen, setIsOpen] = useState(false)
+export default function TapImageBuilder({
+  onGenerate,
+  hasExistingContent,
+  title = 'タップ画像ビルダー(任意) - 1枚の画像に複数のタップ領域を設定',
+  description,
+  defaultOpen,
+}: TapImageBuilderProps) {
+  const [isOpen, setIsOpen] = useState(defaultOpen ?? false)
   const [imageUrl, setImageUrl] = useState('')
   const [altText, setAltText] = useState('')
   const [aspectRatio, setAspectRatio] = useState('1:1')
@@ -220,12 +229,16 @@ export default function TapImageBuilder({ onGenerate, hasExistingContent }: TapI
         onClick={() => setIsOpen((value) => !value)}
         className="flex w-full items-center justify-between gap-3 text-left text-xs font-medium text-gray-600"
       >
-        <span>タップ画像ビルダー(任意) - 1枚の画像に複数のタップ領域を設定</span>
+        <span>{title}</span>
         <span className="shrink-0 text-green-700 underline">{isOpen ? '閉じる' : '開く'}</span>
       </button>
 
       {isOpen && (
         <div className="space-y-3 mt-3">
+          {description && (
+            <p className="text-xs text-gray-500">{description}</p>
+          )}
+
           <div>
             <label className="block text-xs text-gray-500 mb-1">画像URL <span className="text-red-500">*</span></label>
             <input

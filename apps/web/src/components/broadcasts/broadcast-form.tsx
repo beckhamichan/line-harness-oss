@@ -5,6 +5,7 @@ import type { Tag } from '@line-crm/shared'
 import { api, eventsApi, type ApiBroadcast, type EventListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import FlexPreviewComponent from '@/components/flex-preview'
+import TapImageBuilder from '@/components/scenarios/tap-image-builder'
 import ImageUploader from '@/components/shared/image-uploader'
 import MultiAccountDedupSection from './multi-account-dedup-section'
 
@@ -154,9 +155,17 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         {/* Message content */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">
-            メッセージ内容 <span className="text-red-500">*</span>
-            {(form.messageType === 'flex' || form.messageType === 'image') && (
-              <span className="ml-1 text-gray-400">(JSON形式)</span>
+            {form.messageType === 'flex' ? (
+              <>
+                Flex JSON（自動生成・直接編集も可） <span className="text-red-500">*</span>
+              </>
+            ) : (
+              <>
+                メッセージ内容 <span className="text-red-500">*</span>
+                {form.messageType === 'image' && (
+                  <span className="ml-1 text-gray-400">(JSON形式)</span>
+                )}
+              </>
             )}
           </label>
 
@@ -218,6 +227,17 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               <p className="text-xs text-gray-500 mt-1">
                 選ぶと本文末尾にテンプレ URL を挿入。{'{{liff_id}}'} は配信時に各友だちのアカに対応した値に自動置換されます。
               </p>
+            </div>
+          )}
+          {form.messageType === 'flex' && (
+            <div className="mb-2">
+              <TapImageBuilder
+                title="画像リンクメッセージを作成"
+                description="画像URLを入れて、画像の上をドラッグするとタップ領域を作成できます。作成した内容はFlex JSONとして下の入力欄に反映されます。"
+                defaultOpen
+                hasExistingContent={form.messageContent.trim() !== ''}
+                onGenerate={(json) => setForm((prev) => ({ ...prev, messageContent: json }))}
+              />
             </div>
           )}
           <textarea
