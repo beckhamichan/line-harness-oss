@@ -32,9 +32,13 @@ export async function processBroadcastSend(
   }
 
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
+  // Flex はスキップする: autoTrackContent は Flex JSON 内の全 URL を無差別に
+  // /t/<id> トラッキング URL へ置換するため、image.url まで書き換わって画像が
+  // 真っ白になり、action.uri も /t/ 経由で LIFF へリダイレクトされてしまう。
+  // (hotfix: Flex 配信を正常化。text/image の既存挙動は維持)
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
-  if (workerUrl) {
+  if (workerUrl && broadcast.message_type !== 'flex') {
     const { autoTrackContent } = await import('./auto-track.js');
     const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
     finalType = tracked.messageType;
@@ -249,9 +253,11 @@ async function processQueuedBroadcastBatches(
   }
 
   // auto-track（初回バッチのみ、offsetが0のとき）
+  // Flex はスキップ (image.url / action.uri まで /t/ に置換され画像が壊れるため。
+  //  hotfix: 上の processBroadcastSend と同方針)
   let finalType: string = broadcast.message_type;
   let finalContent = broadcast.message_content;
-  if (workerUrl && batchOffset === 0) {
+  if (workerUrl && batchOffset === 0 && broadcast.message_type !== 'flex') {
     const { autoTrackContent } = await import('./auto-track.js');
     const tracked = await autoTrackContent(db, broadcast.message_type, broadcast.message_content, workerUrl);
     finalType = tracked.messageType;

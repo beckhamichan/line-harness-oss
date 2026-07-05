@@ -837,9 +837,12 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
       messageContent = `【テスト配信】\n${messageContent}`;
     }
 
-    // Auto-track URLs
+    // Auto-track URLs — Flex はスキップ (image.url / action.uri まで /t/ に置換され
+    // 画像が真っ白になるため。hotfix: 実送信 processBroadcastSend と同方針)
     const { autoTrackContent } = await import('../services/auto-track.js');
-    const tracked = await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
+    const tracked = broadcast.message_type === 'flex'
+      ? { messageType: broadcast.message_type, content: messageContent }
+      : await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
 
     const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
     const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);
