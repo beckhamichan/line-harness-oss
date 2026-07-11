@@ -6,21 +6,11 @@ import {
   getLineAccountById,
 } from '@line-crm/db'
 
-// Only run once per day — check if 24 hours have passed
-const INSIGHT_INTERVAL_MS = 24 * 60 * 60 * 1000
-let lastInsightRun = 0
-
 export async function processInsightFetch(
   db: D1Database,
   lineClients: Map<string, LineClient>,
   defaultLineClient: LineClient,
 ): Promise<void> {
-  const now = Date.now()
-  if (now - lastInsightRun < INSIGHT_INTERVAL_MS) {
-    return
-  }
-  lastInsightRun = now
-
   const pending = await getPendingInsights(db)
   if (pending.length === 0) return
 
