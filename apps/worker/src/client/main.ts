@@ -13,12 +13,14 @@
  *   ?redirect=x       — redirect after linking (for wrapped URLs)
  *   ?page=book        — booking page (calendar slot picker, Google Calendar)
  *   ?page=salon-book  — salon booking flow (React, dynamic-imported)
+ *   ?page=library     — static lesson library
  */
 
 import { initBooking } from './booking.js';
 import { initForm } from './form.js';
 import { initDiagnosis } from './diagnosis.js';
 import { initHub } from './hub.js';
+import { initLibrary } from './library.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 
 declare const liff: {
@@ -485,6 +487,8 @@ async function main() {
       await initDiagnosis();
     } else if (page === 'hub') {
       await initHub();
+    } else if (page === 'library') {
+      await initLibrary();
     } else if (page === 'form') {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
