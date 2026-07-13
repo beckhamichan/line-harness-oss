@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, test, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 const lineClientMocks = vi.hoisted(() => ({
@@ -66,6 +66,7 @@ import {
   upsertFriend,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { notifyDiscordInbound, shouldNotify } from '../lib/discord-notify.js';
 import { webhook } from './webhook.js';
 
 function setupApp() {
@@ -89,6 +90,63 @@ const baseExecutionCtx = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getLineAccounts).mockResolvedValue([]);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('Discord inbound notification', () => {
+  test('「この夏」は通知せず、人の返信が必要なメッセージは通知する', () => {
+    expect(shouldNotify('この夏')).toBe(false);
+    expect(shouldNotify('対談について質問です')).toBe(true);
+  });
+
+  test('表示名と本文を Discord Webhook へ POST する', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await notifyDiscordInbound('https://discord.example/webhook', {
+      displayName: '山田太郎',
+      text: '対談について質問です',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('https://discord.example/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: '📩 新着メッセージ\n👤 山田太郎\n💬 対談について質問です',
+      }),
+    });
+  });
+
+  test('fetch が失敗しても throw しない', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(notifyDiscordInbound('https://discord.example/webhook', {
+      displayName: '山田太郎',
+      text: '本文',
+    })).resolves.toBeUndefined();
+
+    consoleError.mockRestore();
+  });
+
+  test('200文字を超える本文は末尾の省略記号を含めて200文字にする', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await notifyDiscordInbound('https://discord.example/webhook', {
+      displayName: '山田太郎',
+      text: 'あ'.repeat(201),
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(request.body as string) as { content: string };
+    const notifiedText = body.content.split('\n💬 ')[1];
+    expect(Array.from(notifiedText)).toHaveLength(200);
+    expect(notifiedText.endsWith('…')).toBe(true);
+  });
 });
 
 describe('POST /webhook — DoS defenses (#104)', () => {
