@@ -714,8 +714,12 @@ function scheduleDiscordNotification(
   webhookUrl: string | undefined,
   params: { displayName: string; text: string },
 ): void {
-  if (!webhookUrl) return;
+  if (!webhookUrl) {
+    console.log('[discord-notify] skip: DISCORD_WEBHOOK_URL not set');
+    return;
+  }
 
+  console.log('[discord-notify] scheduling notification');
   const notification = notifyDiscordInbound(webhookUrl, params);
   if (executionCtx) {
     try {

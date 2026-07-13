@@ -15,11 +15,16 @@ export async function notifyDiscordInbound(
   const content = `📩 新着メッセージ\n👤 ${params.displayName}\n💬 ${truncatedText}`;
 
   try {
-    await fetch(webhookUrl, {
+    const res = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
     });
+    if (!res.ok) {
+      console.error('[discord-notify] Discord returned', res.status, await res.text().catch(() => ''));
+    } else {
+      console.log('[discord-notify] sent', res.status);
+    }
   } catch (err) {
     console.error('[discord-notify] Failed to notify inbound message', err);
   }
