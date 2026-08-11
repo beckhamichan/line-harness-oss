@@ -1,10 +1,11 @@
 import liff from '@line/liff';
+import { buildTrackedLinkRedirect } from './tracked-link-redirect.js';
 
 let _liffId: string | null = null;
 let _lineUserId: string | null = null;
 let _idToken: string | null = null;
 
-export async function initLiff(): Promise<void> {
+export async function initLiff(): Promise<boolean> {
   const url = new URL(window.location.href);
   const liffId = url.searchParams.get('liffId') ?? import.meta.env.VITE_DEFAULT_LIFF_ID;
   if (!liffId) {
@@ -14,12 +15,20 @@ export async function initLiff(): Promise<void> {
   await liff.init({ liffId });
   if (!liff.isLoggedIn()) {
     liff.login();
-    return;
+    return false;
   }
   const profile = await liff.getProfile();
   _lineUserId = profile.userId;
   // id_token は Worker 側で LINE Login verify API を叩いて caller を確定するために使う。
   _idToken = liff.getIDToken();
+
+  const redirect = url.searchParams.get('redirect');
+  if (redirect) {
+    window.location.replace(buildTrackedLinkRedirect(redirect, profile.userId, import.meta.env.VITE_API_BASE));
+    return true;
+  }
+
+  return false;
 }
 
 export function getLiffId(): string {
