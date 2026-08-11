@@ -7,7 +7,9 @@ import './index.css';
 
 (async () => {
   try {
-    await initLiff();
+    const redirected = await initLiff();
+    if (redirected) return;
+
     createRoot(document.getElementById('root')!).render(
       <StrictMode>
         <BrowserRouter>
