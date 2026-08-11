@@ -83,6 +83,7 @@ export type Env = {
     ASSETS: Fetcher;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
+    DISCORD_WEBHOOK_URL?: string;
     API_KEY: string;
     LEGACY_API_KEY?: string;
     LIFF_URL: string;
