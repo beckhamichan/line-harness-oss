@@ -1,7 +1,8 @@
 # AI 開発ワークフロー（Claude × Codex）
 
 GitHub Issue を1つ作るだけで、Claude と Codex が役割分担して開発を進めるための運用設計。
-詳細な役割分担・安全ルールは [`CLAUDE.md`](../CLAUDE.md) を正とする。本書は「自動化の全体像」を示す。
+Codex の実装安全基準は [`AGENTS.md`](../AGENTS.md)、Claude の役割とレビュー方針は
+[`CLAUDE.md`](../CLAUDE.md) を正とする。本書は「自動化の全体像」を示す。
 
 ## 役割分担
 
@@ -15,7 +16,9 @@ GitHub Issue を1つ作るだけで、Claude と Codex が役割分担して開�
 - Claude 認証は **`CLAUDE_CODE_OAUTH_TOKEN`**（Claude サブスク）を使う。
 - **`GH_PAT` は当面入れない。** そのため AI が作成した PR では `worker-ci` が自動発火しない。
   → CI は当面 **手動確認**（下記「CI の手動確認」参照）。
-- AI は `main` に直接 push しない。デプロイ（`deploy-*`）は人が PR を Merge した時だけ発火する。
+- AI は `main` に直接 push せず、merge しない。
+- デプロイは `main` への push または `workflow_dispatch` で起動可能だが、
+  merge と `workflow_dispatch` は人だけが明示的に実行する。
 
 ## 運用フロー
 
@@ -31,7 +34,8 @@ GitHub Issue を1つ作るだけで、Claude と Codex が役割分担して開�
 
 AI 生成 PR では `worker-ci` が自動で回らないため、次のいずれかで手動実行する。
 
-- GitHub の **Actions → Worker CI → Run workflow** で対象ブランチを指定して実行（`worker-ci.yml` は `workflow_dispatch` 対応済み）。
+- 人が GitHub の **Actions → Worker CI → Run workflow** で対象ブランチを指定して実行
+  （`worker-ci.yml` は `workflow_dispatch` 対応済み）。
 - もしくは対象ブランチに自分で軽微な commit を1つ push して `pull_request` を起こす。
 - もしくはローカルで `pnpm --filter worker typecheck && pnpm --filter worker test`。
 
@@ -39,9 +43,15 @@ AI 生成 PR では `worker-ci` が自動で回らないため、次のいずれ
 
 ## 安全制約（レビューで必ず見る点）
 
-- **配信禁止時間帯 JST 21:00〜翌8:00**（`packages/db/src/scenario-schedule.ts` の `clampToDeliveryWindow`）。
+- **配信禁止時間帯は `Asia/Tokyo` 基準の 23:00 以上、翌 7:00 未満**。
+  broadcast、multicast、push、シナリオ、リマインダー、予約通知、automation、
+  テスト送信を対象とし、受信イベントに対する reply token での即時 reply だけを例外とする。
+  人の承認があっても、それ以外の例外は設けない。
 - 二重送信・誤アカウント送信・大量誤送信を生まないこと。
 - トークン／チャネルシークレット／アカウントID／顧客データを差分・コメントに含めないこと。
+- deploy、`workflow_dispatch`、remote D1、LINE 実送信、有料 API、外部課金操作は
+  人の明示的承認なしに実行しないこと。
+- `OPENAI_API_KEY` は使用しない。Codex は merge しない。
 
 ## ラベル一覧
 
