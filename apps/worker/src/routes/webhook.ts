@@ -23,6 +23,7 @@ import {
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { notifyDiscordInbound, shouldNotify } from '../lib/discord-notify.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -164,7 +165,18 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
+        await handleEvent(
+          db,
+          lineClient,
+          event,
+          channelAccessToken,
+          matchedAccountId,
+          c.env.WORKER_URL || new URL(c.req.url).origin,
+          c.env.LIFF_URL,
+          c.env.IMAGES,
+          c.env.DISCORD_WEBHOOK_URL,
+          c.executionCtx,
+        );
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -185,6 +197,8 @@ async function handleEvent(
   workerUrl?: string,
   liffUrl?: string,
   r2?: R2Bucket,
+  discordWebhookUrl?: string,
+  executionCtx?: ExecutionContext,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -516,6 +530,16 @@ async function handleEvent(
       )
       .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, jstNow())
       .run();
+
+    const notificationText = msg.type === 'sticker'
+      ? '[スタンプ]'
+      : msg.type === 'image'
+        ? '[画像]'
+        : `[その他: ${msg.type}]`;
+    scheduleDiscordNotification(executionCtx, discordWebhookUrl, {
+      displayName: friend.display_name || '(名前不明)',
+      text: notificationText,
+    });
     return;
   }
 
@@ -665,6 +689,12 @@ async function handleEvent(
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする
     if (!matched) {
       await upsertChatOnMessage(db, friend.id);
+      if (shouldNotify(incomingText)) {
+        scheduleDiscordNotification(executionCtx, discordWebhookUrl, {
+          displayName: friend.display_name || '(名前不明)',
+          text: incomingText,
+        });
+      }
     }
 
     // イベントバス発火: message_received
@@ -677,6 +707,29 @@ async function handleEvent(
 
     return;
   }
+}
+
+function scheduleDiscordNotification(
+  executionCtx: ExecutionContext | undefined,
+  webhookUrl: string | undefined,
+  params: { displayName: string; text: string },
+): void {
+  if (!webhookUrl) {
+    console.log('[discord-notify] skip: DISCORD_WEBHOOK_URL not set');
+    return;
+  }
+
+  console.log('[discord-notify] scheduling notification');
+  const notification = notifyDiscordInbound(webhookUrl, params);
+  if (executionCtx) {
+    try {
+      executionCtx.waitUntil(notification);
+      return;
+    } catch (err) {
+      console.error('[discord-notify] Failed to schedule notification', err);
+    }
+  }
+  void notification;
 }
 
 /**

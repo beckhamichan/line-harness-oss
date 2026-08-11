@@ -11,6 +11,9 @@ dist/
 *.toml.bak
 .env.production
 .env.staging
+.dev.vars
+.pnpm-store/
+d1-backups/
 apps/web/out/
 apps/worker/dist/
 .worktrees/

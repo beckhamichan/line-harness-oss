@@ -9,6 +9,7 @@ import {
   jstNow,
   computeNextDeliveryAt,
   clampToDeliveryWindow,
+  isWithinDeliveryWindow,
   resolveStepContent,
   addTagToFriend,
   type DeliveryMode,
@@ -141,7 +142,14 @@ export async function processStepDeliveries(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  nowJst: Date = new Date(Date.now() + 9 * 60 * 60_000),
 ): Promise<void> {
+  // 送信時ガード：禁止帯(JST 23:00〜7:00)の間は一切送信しない。
+  // clampToDeliveryWindow は次回予約の計算にしか効かないため、cron停止→深夜復帰時に
+  // 滞留分(next_delivery_at が過去のまま)が禁止帯に一斉送信されるのをここで防ぐ。
+  // 滞留分は次回予約を書き換えず、7:00 以降の最初の cron でそのまま配信される。
+  if (!isWithinDeliveryWindow(nowJst)) return;
+
   const now = jstNow();
   const dueFriendScenarios = await getFriendScenariosDueForDelivery(db, now);
 

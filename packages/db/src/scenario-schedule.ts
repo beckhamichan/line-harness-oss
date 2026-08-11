@@ -26,14 +26,14 @@ function addMinutes(date: Date, minutes: number): Date {
   return next;
 }
 
-// 配信禁止時間帯（JST）。21:00〜翌8:00 は配信しない。
-const QUIET_START_HOUR = 21; // この時刻以降は禁止
-const QUIET_END_HOUR = 8; // この時刻未満は禁止（= 8:00 から配信可）
-const MORNING_JITTER_MINUTES = 30; // 繰り下げ先を 8:00〜8:30 に散らす
+// 配信禁止時間帯（JST）。23:00〜翌7:00 は配信しない。
+const QUIET_START_HOUR = 23; // この時刻以降は禁止
+const QUIET_END_HOUR = 7; // この時刻未満は禁止（= 7:00 から配信可）
+const MORNING_JITTER_MINUTES = 30; // 繰り下げ先を 7:00〜7:30 に散らす
 
 /**
- * 配信時間帯ガード：算出済みの配信時刻が JST 21:00〜翌8:00 の禁止帯に入る場合、
- * 直近の許可開始（8:00）以降へ繰り下げる。繰り下げ先は 8:00〜8:30 でジッタ。
+ * 配信時間帯ガード：算出済みの配信時刻が JST 23:00〜翌7:00 の禁止帯に入る場合、
+ * 直近の許可開始（7:00）以降へ繰り下げる。繰り下げ先は 7:00〜7:30 でジッタ。
  * 禁止帯外はそのまま返す（relative運用を維持し、最後にこれだけ適用する想定）。
  *
  * 入力 date は computeNextDeliveryAt と同じ「JST clock-time を表す Date」前提
@@ -46,13 +46,24 @@ export function clampToDeliveryWindow(date: Date, rand: () => number = Math.rand
   if (!inQuiet) return date;
 
   const result = new Date(date);
-  // 21:00 以降は「翌日」の朝へ。8:00 未満は「当日」の朝へ。
+  // 23:00 以降は「翌日」の朝へ。7:00 未満は「当日」の朝へ。
   if (hour >= QUIET_START_HOUR) {
     result.setDate(result.getDate() + 1);
   }
   const jitter = Math.floor(rand() * (MORNING_JITTER_MINUTES + 1)); // 0〜30 分
   result.setHours(QUIET_END_HOUR, jitter, 0, 0);
   return result;
+}
+
+/**
+ * 送信時ガード用の判定：与えられた時刻が配信可能時間帯（JST 7:00〜23:00）内なら true。
+ * clampToDeliveryWindow は次回予約の計算にしか効かないため、cron停止→深夜復帰時に
+ * 滞留分が禁止帯へ流れるのを送信直前に防ぐ用途で使う。
+ * 入力 date は clampToDeliveryWindow と同じ「JST clock-time を表す Date」前提。
+ */
+export function isWithinDeliveryWindow(date: Date): boolean {
+  const hour = date.getHours();
+  return hour >= QUIET_END_HOUR && hour < QUIET_START_HOUR;
 }
 
 function addDays(date: Date, days: number): Date {

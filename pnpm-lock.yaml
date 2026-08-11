@@ -75,6 +75,9 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.4)
+      '@line-crm/line-sdk':
+        specifier: workspace:*
+        version: link:../../packages/line-sdk
       '@line-crm/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -222,6 +225,9 @@ importers:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@25.5.0)(lightningcss@1.32.0)
 
   packages/mcp-server:
     dependencies:

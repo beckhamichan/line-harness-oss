@@ -1853,6 +1853,7 @@ const DX_RESULT_MESSAGES: Record<DxTypeKey, string> = {
 
 // 7日間オンボーディングシナリオ（trigger=manual・下書き運用。本番化は friend_add へ変更）
 const DX_ONBOARDING_SCENARIO_ID = 'a8c02e28-beb1-4202-ac83-b39401a56e42';
+const M_MEMBER_TAG_ID = '5e3a934c-3d42-4409-a359-6a254588fb72';
 
 liffRoutes.post('/api/liff/diagnosis', async (c) => {
   try {
@@ -1861,6 +1862,8 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
       lineUserId?: string;
       type?: string;
       scores?: Record<string, number>;
+      displayName?: string;
+      pictureUrl?: string | null;
     }>();
 
     const lineUserId = body.lineUserId;
@@ -1869,9 +1872,14 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
       return c.json({ success: false, error: 'lineUserId and valid type are required' }, 400);
     }
 
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    let friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      friend = await upsertFriend(db, {
+        lineUserId,
+        displayName: body.displayName || 'Unknown',
+        pictureUrl: body.pictureUrl ?? null,
+        statusMessage: null,
+      });
     }
 
     const meta = DX_TYPE_META[type];
@@ -1919,7 +1927,13 @@ liffRoutes.post('/api/liff/diagnosis', async (c) => {
 
     // ③ 7日間オンボーディングへ enroll（best-effort・既enrollはnull）
     try {
-      await enrollFriendInScenario(db, friend.id, DX_ONBOARDING_SCENARIO_ID);
+      const isMember = await db
+        .prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ? LIMIT 1')
+        .bind(friend.id, M_MEMBER_TAG_ID)
+        .first();
+      if (!isMember) {
+        await enrollFriendInScenario(db, friend.id, DX_ONBOARDING_SCENARIO_ID);
+      }
     } catch (e) {
       console.error('diagnosis enroll error:', e);
     }
@@ -1970,20 +1984,44 @@ function routeIntroMessage(key: RouteKey): string {
   return `「${ROUTE_MAP[key].label}」に興味を持ってくれてありがとう！🚢 いま、あなたにぴったりの航路を準備しています。整い次第、いちばんにご案内しますね。\n——ベッカミ`;
 }
 
+async function hasActiveTagAddedScenario(db: D1Database, tagId: string): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 FROM scenarios
+       WHERE trigger_type = 'tag_added' AND trigger_tag_id = ?1 AND is_active = 1
+       LIMIT 1`,
+    )
+    .bind(tagId)
+    .first();
+  return Boolean(row);
+}
+
 liffRoutes.post('/api/liff/route-select', async (c) => {
   try {
     const db = c.env.DB;
-    const body = await c.req.json<{ lineUserId?: string; interest?: string }>();
+    const body = await c.req.json<{
+      lineUserId?: string;
+      interest?: string;
+      isMember?: boolean;
+      displayName?: string;
+      pictureUrl?: string | null;
+    }>();
 
     const lineUserId = body.lineUserId;
     const interest = body.interest;
+    const isMember = body.isMember === true;
     if (!lineUserId || !isRouteKey(interest)) {
       return c.json({ success: false, error: 'lineUserId and valid interest are required' }, 400);
     }
 
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    let friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      friend = await upsertFriend(db, {
+        lineUserId,
+        displayName: body.displayName || 'Unknown',
+        pictureUrl: body.pictureUrl ?? null,
+        statusMessage: null,
+      });
     }
 
     const route = ROUTE_MAP[interest];
@@ -1992,8 +2030,11 @@ liffRoutes.post('/api/liff/route-select', async (c) => {
     // ① 興味タグ I:（恒久） ② ルートタグ R:（tag_added 起動）。
     // attachTagAndFireSideEffects = friend_tags INSERT OR IGNORE ＋ tag_added enroll ＋ tag_change。
     try {
+      if (isMember) {
+        await attachTagAndFireSideEffects(db, friend.id, M_MEMBER_TAG_ID);
+      }
       await attachTagAndFireSideEffects(db, friend.id, route.iTag);
-      await attachTagAndFireSideEffects(db, friend.id, route.rTag);
+      await attachTagAndFireSideEffects(db, friend.id, route.rTag, isMember ? { enroll: false } : undefined);
     } catch (e) {
       console.error('route-select tag attach error:', e);
     }
@@ -2023,6 +2064,11 @@ liffRoutes.post('/api/liff/route-select', async (c) => {
 
     // ④ ルート別の案内 Push（best-effort・messages_log 記録）
     try {
+      const shouldSendIntro = interest === 'ecg' || !(await hasActiveTagAddedScenario(db, route.rTag));
+      if (!shouldSendIntro) {
+        return c.json({ success: true, data: { interest, label: route.label, nextPage: route.nextPage } });
+      }
+
       let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
       if (friend.line_account_id) {
         const acct = await getLineAccountById(db, friend.line_account_id);

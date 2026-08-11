@@ -16,6 +16,7 @@ import { getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const broadcasts = new Hono<Env>();
+const MIN_INSIGHT_FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Parse a D1 JSON-array column. Returns:
@@ -645,6 +646,9 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', async (c) => {
     if (broadcast.status !== 'sent') {
       return c.json({ success: false, error: 'Broadcast has not been sent yet' }, 400);
     }
+    if (!broadcast.sent_at || Date.now() - new Date(broadcast.sent_at).getTime() < MIN_INSIGHT_FETCH_AGE_MS) {
+      return c.json({ success: false, error: 'insight not ready: wait at least 24h after send' }, 400);
+    }
 
     // DBから直接取得してline_request_id/aggregation_unit/account_ids/failed_account_idsを確実に読む
     const rawBroadcast = await c.env.DB.prepare(
@@ -837,9 +841,12 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
       messageContent = `【テスト配信】\n${messageContent}`;
     }
 
-    // Auto-track URLs
+    // Auto-track URLs — Flex はスキップ (image.url / action.uri まで /t/ に置換され
+    // 画像が真っ白になるため。hotfix: 実送信 processBroadcastSend と同方針)
     const { autoTrackContent } = await import('../services/auto-track.js');
-    const tracked = await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
+    const tracked = broadcast.message_type === 'flex'
+      ? { messageType: broadcast.message_type, content: messageContent }
+      : await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
 
     const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
     const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);

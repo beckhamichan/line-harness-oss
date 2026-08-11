@@ -14,6 +14,7 @@ export async function attachTagAndFireSideEffects(
   db: D1Database,
   friendId: string,
   tagId: string,
+  options: { enroll?: boolean } = {},
 ): Promise<{ added: boolean }> {
   const result = await db
     .prepare(
@@ -25,19 +26,21 @@ export async function attachTagAndFireSideEffects(
   const added = (result.meta?.changes ?? 0) > 0;
   if (!added) return { added: false };
 
-  const scenarios = await getScenarios(db);
-  for (const scenario of scenarios) {
-    if (
-      scenario.trigger_type === 'tag_added' &&
-      scenario.is_active &&
-      scenario.trigger_tag_id === tagId
-    ) {
-      const existing = await db
-        .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
-        .bind(friendId, scenario.id)
-        .first();
-      if (!existing) {
-        await enrollFriendInScenario(db, friendId, scenario.id);
+  if (options.enroll !== false) {
+    const scenarios = await getScenarios(db);
+    for (const scenario of scenarios) {
+      if (
+        scenario.trigger_type === 'tag_added' &&
+        scenario.is_active &&
+        scenario.trigger_tag_id === tagId
+      ) {
+        const existing = await db
+          .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
+          .bind(friendId, scenario.id)
+          .first();
+        if (!existing) {
+          await enrollFriendInScenario(db, friendId, scenario.id);
+        }
       }
     }
   }

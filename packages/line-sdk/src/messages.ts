@@ -211,6 +211,14 @@ export interface FlexBox {
   backgroundColor?: string;
   cornerRadius?: string;
   action?: TemplateAction;
+  /** 'absolute' to position this box relative to its parent box (used for tap-overlay areas on top of an image). */
+  position?: 'absolute' | 'relative';
+  offsetTop?: string;
+  offsetBottom?: string;
+  offsetStart?: string;
+  offsetEnd?: string;
+  width?: string;
+  height?: string;
 }
 
 export interface FlexText {
