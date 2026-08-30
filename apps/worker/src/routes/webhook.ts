@@ -452,7 +452,9 @@ async function handleEvent(
 
           if (rule.trigger_tag_id) {
             try {
-              await attachTagAndFireSideEffects(db, friend.id, rule.trigger_tag_id);
+              // auto_reply はキーワード応答者への目印付けが目的で、シナリオ登録は
+              // 意図しない副作用のため enroll:false で明示的に無効化する。
+              await attachTagAndFireSideEffects(db, friend.id, rule.trigger_tag_id, { enroll: false });
             } catch (err) {
               console.error('Failed to attach auto-reply tag', err);
             }
@@ -675,10 +677,12 @@ async function handleEvent(
           replyTokenConsumed = true;
 
           // LINE 返信が成功した応答者だけを参加者タグへ記録する。再送時も helper が
-          // INSERT OR IGNORE で冪等に処理し、tag_added の副作用を重複発火させない。
+          // INSERT OR IGNORE で冪等に処理し、重複付与を防ぐ。auto_reply はキーワード
+          // 応答者への目印付けが目的で、シナリオ登録は意図しない副作用のため
+          // enroll:false で明示的に無効化する。
           if (rule.trigger_tag_id) {
             try {
-              await attachTagAndFireSideEffects(db, friend.id, rule.trigger_tag_id);
+              await attachTagAndFireSideEffects(db, friend.id, rule.trigger_tag_id, { enroll: false });
             } catch (err) {
               console.error('Failed to attach auto-reply tag', err);
             }

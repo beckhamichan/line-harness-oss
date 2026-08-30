@@ -458,6 +458,7 @@ describe('POST /webhook — auto_reply trigger tag', () => {
       db,
       'friend-seminar',
       'seminar-tag',
+      { enroll: false },
     );
   });
 });
