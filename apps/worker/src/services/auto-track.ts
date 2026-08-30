@@ -41,6 +41,14 @@ function appendOpenExternalBrowser(url: string): string {
   return `${base}${sep}openExternalBrowser=1${fragment}`;
 }
 
+function requestsExternalBrowser(url: string): boolean {
+  try {
+    return new URL(url).searchParams.get('openExternalBrowser') === '1';
+  } catch {
+    return false;
+  }
+}
+
 const URL_REGEX = /https?:\/\/[^\s"'<>\])}]+/g;
 
 // URLs that should NOT be wrapped (internal/system URLs)
@@ -189,7 +197,11 @@ export async function autoTrackContent(
         replacement = appendOpenExternalBrowser(url);
       } else {
         const tracked = urlMap.get(url);
-        replacement = tracked ? tracked.trackingUrl : url;
+        // 元 URL が外部ブラウザを明示している場合は、差し替え後の /t/ URL にも
+        // フラグを引き継ぐ。Zoom 等の遷移要件を自動計測で失わないため。
+        replacement = tracked
+          ? (requestsExternalBrowser(url) ? appendOpenExternalBrowser(tracked.trackingUrl) : tracked.trackingUrl)
+          : url;
       }
       result = result.split(url).join(replacement);
     }
@@ -201,7 +213,7 @@ export async function autoTrackContent(
   const urlMap = await createTrackingMap(db, urls, workerUrl);
   let result = content;
   for (const [original, { trackingUrl, originalUrl }] of urlMap) {
-    const finalUrl = isAppLinkDomain(originalUrl)
+    const finalUrl = isAppLinkDomain(originalUrl) || requestsExternalBrowser(originalUrl)
       ? appendOpenExternalBrowser(trackingUrl)
       : trackingUrl;
     result = result.split(original).join(finalUrl);

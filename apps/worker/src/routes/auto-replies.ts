@@ -25,6 +25,7 @@ interface SerializedAutoReply {
   responseType: string;
   responseContent: string;
   templateId: string | null;
+  triggerTagId: string | null;
   lineAccountId: string | null;
   isActive: boolean;
   createdAt: string;
@@ -39,6 +40,7 @@ function serializeAutoReply(row: DbAutoReply): SerializedAutoReply {
     responseType: row.response_type,
     responseContent: row.response_content,
     templateId: row.template_id,
+    triggerTagId: row.trigger_tag_id,
     lineAccountId: row.line_account_id,
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
@@ -156,6 +158,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       responseType?: string;
       responseContent?: string;
       templateId?: string | null;
+      triggerTagId?: string | null;
       lineAccountId?: string | null;
     }>();
 
@@ -188,6 +191,7 @@ autoReplies.post('/api/auto-replies', async (c) => {
       responseType: resolvedResponseType,
       responseContent: resolvedResponseContent,
       templateId: body.templateId ?? null,
+      triggerTagId: body.triggerTagId ?? null,
       lineAccountId: body.lineAccountId ?? null,
     });
 
@@ -208,6 +212,7 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
       responseType?: string;
       responseContent?: string;
       templateId?: string | null;
+      triggerTagId?: string | null;
       lineAccountId?: string | null;
       isActive?: boolean;
     }>();
@@ -218,6 +223,7 @@ autoReplies.put('/api/auto-replies/:id', async (c) => {
     if (body.responseType !== undefined) input.responseType = body.responseType;
     if (body.responseContent !== undefined) input.responseContent = body.responseContent;
     if ('templateId' in body) input.templateId = body.templateId;
+    if ('triggerTagId' in body) input.triggerTagId = body.triggerTagId;
     if ('lineAccountId' in body) input.lineAccountId = body.lineAccountId;
     if (body.isActive !== undefined) input.isActive = body.isActive;
 
