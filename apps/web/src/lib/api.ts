@@ -577,6 +577,7 @@ export const api = {
         responseType: string;
         responseContent: string;
         templateId: string | null;
+        triggerTagId: string | null;
         lineAccountId: string | null;
         isActive: boolean;
         createdAt: string;
@@ -596,6 +597,7 @@ export const api = {
         responseType: string;
         responseContent: string;
         templateId: string | null;
+        triggerTagId: string | null;
         lineAccountId: string | null;
         isActive: boolean;
         createdAt: string;
@@ -606,6 +608,7 @@ export const api = {
       responseType?: string;
       responseContent?: string;
       templateId?: string | null;
+      triggerTagId?: string | null;
       lineAccountId?: string | null;
     }) =>
       fetchApi<ApiResponse<{ id: string }>>('/api/auto-replies', {
@@ -618,6 +621,7 @@ export const api = {
       responseType?: string;
       responseContent?: string;
       templateId?: string | null;
+      triggerTagId?: string | null;
       lineAccountId?: string | null;
       isActive?: boolean;
     }) =>

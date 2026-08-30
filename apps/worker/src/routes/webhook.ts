@@ -22,6 +22,8 @@ import {
 } from '@line-crm/db';
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
+import { matchesAutoReply } from '../services/auto-reply-match.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { notifyDiscordInbound, shouldNotify } from '../lib/discord-notify.js';
 import type { Env } from '../index.js';
@@ -412,6 +414,7 @@ async function handleEvent(
         response_type: string;
         response_content: string;
         template_id: string | null;
+        trigger_tag_id: string | null;
       }>();
 
     // postback の incoming 自体を messages_log に記録する。Rich Menu のタップで
@@ -431,9 +434,7 @@ async function handleEvent(
     }
 
     for (const rule of autoReplies.results) {
-      const isMatch = rule.match_type === 'exact'
-        ? postbackData === rule.keyword
-        : postbackData.includes(rule.keyword);
+      const isMatch = matchesAutoReply(rule, postbackData);
 
       if (isMatch) {
         try {
@@ -445,8 +446,17 @@ async function handleEvent(
             response_content: rule.response_content,
           });
           const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
+          // auto_replyはURL自動計測を通さず、本文に指定したURLをそのまま返す。
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
+
+          if (rule.trigger_tag_id) {
+            try {
+              await attachTagAndFireSideEffects(db, friend.id, rule.trigger_tag_id);
+            } catch (err) {
+              console.error('Failed to attach auto-reply tag', err);
+            }
+          }
 
           // 送信ログ — Rich Menu 経由の Flex 応答もチャット詳細に残るようにする。
           // テキスト auto_reply (line ~390) と同じパターン。
@@ -632,6 +642,7 @@ async function handleEvent(
         response_type: string;
         response_content: string;
         template_id: string | null;
+        trigger_tag_id: string | null;
         is_active: number;
         created_at: string;
       }>();
@@ -639,10 +650,7 @@ async function handleEvent(
     let matched = false;
     let replyTokenConsumed = false;
     for (const rule of autoReplies.results) {
-      const isMatch =
-        rule.match_type === 'exact'
-          ? incomingText === rule.keyword
-          : incomingText.includes(rule.keyword);
+      const isMatch = matchesAutoReply(rule, incomingText);
 
       if (isMatch) {
         // silent タイプ: 返信しないが matched=true にして unread / push を抑止する
@@ -660,9 +668,21 @@ async function handleEvent(
             response_content: rule.response_content,
           });
           const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
+          // auto_reply は autoTrackContent を意図的に通さない。キーワード応答の
+          // 直接 URL（例: Zoom の openExternalBrowser=1）を改変せず返すため。
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
           replyTokenConsumed = true;
+
+          // LINE 返信が成功した応答者だけを参加者タグへ記録する。再送時も helper が
+          // INSERT OR IGNORE で冪等に処理し、tag_added の副作用を重複発火させない。
+          if (rule.trigger_tag_id) {
+            try {
+              await attachTagAndFireSideEffects(db, friend.id, rule.trigger_tag_id);
+            } catch (err) {
+              console.error('Failed to attach auto-reply tag', err);
+            }
+          }
 
           // 送信ログ（replyMessage = 無料）— derive content from the built
           // reply message so any cleanEmptyNodes / parse-failure fallback is

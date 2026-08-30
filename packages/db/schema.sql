@@ -198,12 +198,14 @@ CREATE TABLE IF NOT EXISTS auto_replies (
   response_type    TEXT NOT NULL DEFAULT 'text',
   response_content TEXT NOT NULL,
   template_id      TEXT REFERENCES templates(id) ON DELETE SET NULL,
+  trigger_tag_id   TEXT REFERENCES tags(id) ON DELETE SET NULL,
   line_account_id  TEXT DEFAULT NULL,
   is_active        INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_auto_replies_template_id ON auto_replies(template_id);
+CREATE INDEX IF NOT EXISTS idx_auto_replies_trigger_tag_id ON auto_replies(trigger_tag_id);
 
 -- ============================================================
 -- Admin Users

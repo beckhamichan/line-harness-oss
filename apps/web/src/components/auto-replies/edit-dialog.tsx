@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { api } from '@/lib/api'
+import type { Tag } from '@line-crm/shared'
 import ImageUploader from '@/components/shared/image-uploader'
 
 export interface AutoReplyDraft {
@@ -11,6 +12,7 @@ export interface AutoReplyDraft {
   responseType: string
   responseContent: string
   templateId: string | null
+  triggerTagId: string | null
   lineAccountId: string | null
   isActive: boolean
 }
@@ -18,6 +20,7 @@ export interface AutoReplyDraft {
 interface Props {
   draft: AutoReplyDraft
   templates: Array<{ id: string; name: string; messageType: string; messageContent: string }>
+  tags: Tag[]
   onClose: () => void
   onSaved: () => void
 }
@@ -32,11 +35,12 @@ function detectMode(d: AutoReplyDraft): ResponseMode {
   return 'inline-text'
 }
 
-export default function EditDialog({ draft, templates, onClose, onSaved }: Props) {
+export default function EditDialog({ draft, templates, tags, onClose, onSaved }: Props) {
   const [keyword, setKeyword] = useState(draft.keyword)
   const [matchType, setMatchType] = useState<'exact' | 'contains'>(draft.matchType)
   const [mode, setMode] = useState<ResponseMode>(detectMode(draft))
   const [templateId, setTemplateId] = useState<string | null>(draft.templateId)
+  const [triggerTagId, setTriggerTagId] = useState<string | null>(draft.triggerTagId)
   const [responseContent, setResponseContent] = useState(draft.responseContent)
   const [isActive, setIsActive] = useState(draft.isActive)
   const [saving, setSaving] = useState(false)
@@ -61,6 +65,7 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
         responseType: string;
         responseContent: string;
         templateId: string | null;
+        triggerTagId: string | null;
         lineAccountId: string | null;
         isActive: boolean;
       } = {
@@ -76,6 +81,7 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
         // 削除された (ON DELETE SET NULL) ときの inline fallback として機能する。
         responseContent: mode === 'silent' ? '' : responseContent,
         templateId: mode === 'template' ? templateId : null,
+        triggerTagId,
         lineAccountId: draft.lineAccountId,
         isActive,
       }
@@ -153,6 +159,22 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
                 </button>
               ))}
             </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">応答成功後に付与するタグ（任意）</label>
+            <select
+              value={triggerTagId ?? ''}
+              onChange={(e) => setTriggerTagId(e.target.value || null)}
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option value="">付与しない</option>
+              {tags.map((tag) => (
+                <option key={tag.id} value={tag.id}>{tag.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-gray-500 mt-1">
+              LINEへの返信が成功した場合だけ付与され、同じ人への再付与は重複しません。
+            </p>
           </div>
           {mode === 'template' && (
             <div>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '@/lib/api'
+import type { Tag } from '@line-crm/shared'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import EditDialog, { type AutoReplyDraft } from '@/components/auto-replies/edit-dialog'
@@ -20,6 +21,7 @@ interface AutoReply {
   responseType: string
   responseContent: string
   templateId: string | null
+  triggerTagId: string | null
   lineAccountId: string | null
   isActive: boolean
   createdAt: string
@@ -39,6 +41,7 @@ export default function AutoRepliesPage() {
   const { selectedAccountId, accounts } = useAccount()
   const [items, setItems] = useState<AutoReply[]>([])
   const [templates, setTemplates] = useState<TemplateLite[]>([])
+  const [tags, setTags] = useState<Tag[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<AutoReplyDraft | null>(null)
@@ -47,9 +50,10 @@ export default function AutoRepliesPage() {
     setLoading(true)
     setError('')
     try {
-      const [arRes, tplRes] = await Promise.all([
+      const [arRes, tplRes, tagsRes] = await Promise.all([
         api.autoReplies.list({ accountId: selectedAccountId || undefined }),
         api.templates.list(),
+        api.tags.list(),
       ])
       if (arRes.success) setItems(arRes.data)
       if (tplRes.success) setTemplates(tplRes.data.map((t) => ({
@@ -58,6 +62,7 @@ export default function AutoRepliesPage() {
         messageType: t.messageType,
         messageContent: t.messageContent,
       })))
+      if (tagsRes.success) setTags(tagsRes.data)
     } catch {
       setError('読み込みに失敗しました')
     } finally {
@@ -69,6 +74,7 @@ export default function AutoRepliesPage() {
 
   const templateById = new Map(templates.map((t) => [t.id, t]))
   const accountById = new Map(accounts.map((a) => [a.id, a]))
+  const tagById = new Map(tags.map((tag) => [tag.id, tag]))
 
   const renderEffectiveCell = (r: AutoReply) => {
     if (!r.effectiveAccounts || r.effectiveAccounts.length === 0) {
@@ -158,6 +164,7 @@ export default function AutoRepliesPage() {
               responseType: 'text',
               responseContent: '',
               templateId: null,
+              triggerTagId: null,
               lineAccountId: selectedAccountId,
               isActive: true,
             })}
@@ -190,6 +197,7 @@ export default function AutoRepliesPage() {
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">match</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">response</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">template</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">応答後タグ</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">適用アカウント</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">状態</th>
                 <th className="px-4 py-3" />
@@ -197,9 +205,9 @@ export default function AutoRepliesPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">読み込み中...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">読み込み中...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">自動返信ルールがありません</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">自動返信ルールがありません</td></tr>
               ) : (
                 items.map((r) => (
                   <tr key={r.id} className="hover:bg-gray-50">
@@ -207,6 +215,9 @@ export default function AutoRepliesPage() {
                     <td className="px-4 py-3 text-xs text-gray-600">{matchTypeLabel[r.matchType]}</td>
                     <td className="px-4 py-3">{renderResponseCell(r)}</td>
                     <td className="px-4 py-3">{renderTemplateCell(r)}</td>
+                    <td className="px-4 py-3 text-xs text-gray-600">
+                      {r.triggerTagId ? (tagById.get(r.triggerTagId)?.name ?? r.triggerTagId.slice(0, 8)) : <span className="text-gray-400">なし</span>}
+                    </td>
                     <td className="px-4 py-3">{renderEffectiveCell(r)}</td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${r.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
@@ -222,6 +233,7 @@ export default function AutoRepliesPage() {
                           responseType: r.responseType,
                           responseContent: r.responseContent,
                           templateId: r.templateId,
+                          triggerTagId: r.triggerTagId,
                           lineAccountId: r.lineAccountId,
                           isActive: r.isActive,
                         })}
@@ -248,6 +260,7 @@ export default function AutoRepliesPage() {
         <EditDialog
           draft={editing}
           templates={templates}
+          tags={tags}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load() }}
         />

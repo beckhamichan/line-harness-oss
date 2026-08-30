@@ -309,6 +309,8 @@ export interface AutoReply {
   responseType: MessageType;
   /** レスポンス内容 */
   responseContent: string;
+  /** 応答成功後に付与するタグ。null の場合は付与しない */
+  triggerTagId: string | null;
   /** 有効/無効フラグ */
   isActive: boolean;
   /** 作成日時 (ISO 8601) */

@@ -41,9 +41,15 @@ vi.mock('../services/event-bus.js', () => ({
   fireEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../services/friend-tag-attach.js', () => ({
+  attachTagAndFireSideEffects: vi.fn().mockResolvedValue({ added: true }),
+}));
+
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
   expandVariables: vi.fn(),
+  resolveMetadata: vi.fn().mockResolvedValue({}),
+  messageToLogPayload: vi.fn(),
 }));
 
 import { verifySignature } from '@line-crm/line-sdk';
@@ -66,6 +72,8 @@ import {
   upsertFriend,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
+import { buildMessage, expandVariables, messageToLogPayload } from '../services/step-delivery.js';
 import { notifyDiscordInbound, shouldNotify } from '../lib/discord-notify.js';
 import { webhook } from './webhook.js';
 
@@ -353,5 +361,103 @@ describe('POST /webhook — first-contact existing friends', () => {
     expect(addTagToFriend).not.toHaveBeenCalled();
     expect(getEntryRouteByRefCode).not.toHaveBeenCalled();
     expect(getMessageTemplateById).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /webhook — auto_reply trigger tag', () => {
+  test('部分一致の返信成功後に専用タグを1回付与する', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(jstNow).mockReturnValue('2026-08-30T15:00:00.000+09:00');
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-seminar',
+      line_user_id: 'U-seminar',
+      display_name: '参加者',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: null,
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-08-30T14:00:00.000+09:00',
+      updated_at: '2026-08-30T14:00:00.000+09:00',
+    });
+    vi.mocked(expandVariables).mockReturnValue('Zoom案内');
+    vi.mocked(buildMessage).mockReturnValue({ type: 'text', text: 'Zoom案内' });
+    vi.mocked(messageToLogPayload).mockReturnValue({ messageType: 'text', content: 'Zoom案内' });
+
+    const db = {
+      prepare: vi.fn((sql: string) => {
+        const stmt = {
+          bind: vi.fn(),
+          run: vi.fn().mockResolvedValue({}),
+          all: vi.fn().mockResolvedValue({
+            results: sql.includes('FROM auto_replies')
+              ? [{
+                  id: 'seminar-rule',
+                  keyword: 'セミナー',
+                  match_type: 'contains',
+                  response_type: 'text',
+                  response_content: 'Zoom案内',
+                  template_id: null,
+                  trigger_tag_id: 'seminar-tag',
+                  is_active: 1,
+                  created_at: '2026-08-30T12:00:00.000+09:00',
+                }]
+              : [],
+          }),
+        };
+        stmt.bind.mockReturnValue(stmt);
+        return stmt;
+      }),
+    } as unknown as D1Database;
+
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const app = setupApp();
+    const response = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [{
+            type: 'message',
+            replyToken: 'reply-token',
+            message: { type: 'text', id: 'message-seminar', text: 'セミナー参加します' },
+            timestamp: Date.now(),
+            source: { type: 'user', userId: 'U-seminar' },
+            webhookEventId: 'event-seminar',
+            deliveryContext: { isRedelivery: false },
+            mode: 'active',
+          }],
+        }),
+      },
+      { ...baseEnv, DB: db },
+      executionCtx,
+    );
+
+    expect(response.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith(
+      'reply-token',
+      [{ type: 'text', text: 'Zoom案内' }],
+    );
+    expect(attachTagAndFireSideEffects).toHaveBeenCalledTimes(1);
+    expect(attachTagAndFireSideEffects).toHaveBeenCalledWith(
+      db,
+      'friend-seminar',
+      'seminar-tag',
+    );
   });
 });

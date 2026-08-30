@@ -10,6 +10,7 @@ export interface AutoReply {
   response_type: string;
   response_content: string;
   template_id: string | null;
+  trigger_tag_id: string | null;
   line_account_id: string | null;
   is_active: number;
   created_at: string;
@@ -50,6 +51,7 @@ export interface CreateAutoReplyInput {
   responseType?: string;
   responseContent: string;
   templateId?: string | null;
+  triggerTagId?: string | null;
   lineAccountId?: string | null;
 }
 
@@ -64,8 +66,8 @@ export async function createAutoReply(
     .prepare(
       `INSERT INTO auto_replies
          (id, keyword, match_type, response_type, response_content,
-          template_id, line_account_id, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          template_id, trigger_tag_id, line_account_id, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .bind(
       id,
@@ -74,6 +76,7 @@ export async function createAutoReply(
       input.responseType ?? 'text',
       input.responseContent,
       input.templateId ?? null,
+      input.triggerTagId ?? null,
       input.lineAccountId ?? null,
       now,
     )
@@ -88,6 +91,7 @@ export interface UpdateAutoReplyInput {
   responseType?: string;
   responseContent?: string;
   templateId?: string | null;
+  triggerTagId?: string | null;
   lineAccountId?: string | null;
   isActive?: boolean;
 }
@@ -110,6 +114,7 @@ export async function updateAutoReply(
            response_type = ?,
            response_content = ?,
            template_id = ?,
+           trigger_tag_id = ?,
            line_account_id = ?,
            is_active = ?,
            created_at = ?
@@ -121,6 +126,7 @@ export async function updateAutoReply(
       input.responseType ?? existing.response_type,
       input.responseContent ?? existing.response_content,
       'templateId' in input ? (input.templateId ?? null) : existing.template_id,
+      'triggerTagId' in input ? (input.triggerTagId ?? null) : existing.trigger_tag_id,
       'lineAccountId' in input ? (input.lineAccountId ?? null) : existing.line_account_id,
       'isActive' in input ? (input.isActive ? 1 : 0) : existing.is_active,
       existing.created_at,
