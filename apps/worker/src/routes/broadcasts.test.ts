@@ -298,6 +298,73 @@ describe('standard tag broadcast targeting', () => {
     });
   });
 
+  test('rejects a legacy targetTagId-only update on a broadcast that has 2+ saved tags', async () => {
+    // serializeBroadcast は互換のため先頭のタグを targetTagId に載せて返す。
+    // それをそのまま送り返すクライアントで、集合が静かに 1 件へ狭まらないこと（PR #52 指摘 2-2）。
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: null,
+      target_tag_ids: '["tag-a","tag-b"]',
+      status: 'draft',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetTagId: 'tag-a' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ success: false });
+    expect(dbMocks.updateBroadcast).not.toHaveBeenCalled();
+  });
+
+  test('still allows changing the tags of a multi-tag broadcast when targetTagIds is explicit', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: null,
+      target_tag_ids: '["tag-a","tag-b"]',
+      status: 'draft',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.updateBroadcast.mockResolvedValue({ ...existing, target_tag_id: 'tag-a', target_tag_ids: '["tag-a"]' });
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetTagIds: ['tag-a'] }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  test('still accepts a legacy targetTagId update on a single-tag broadcast', async () => {
+    // 従来のクライアント（SDK・MCP）の単一タグ運用は壊さない。
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: 'tag-a',
+      target_tag_ids: null,
+      status: 'draft',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.updateBroadcast.mockResolvedValue({ ...existing, target_tag_id: 'tag-b', target_tag_ids: '["tag-b"]' });
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetTagId: 'tag-b' }),
+    });
+
+    expect(res.status).toBe(200);
+  });
+
   test('keeps multi-account-dedup on its legacy single tag field', async () => {
     const existing = {
       ...makeBroadcast(null),

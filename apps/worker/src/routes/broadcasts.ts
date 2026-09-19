@@ -415,6 +415,24 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
 
     const effectiveTargetType = body.targetType ?? existing.target_type;
     const tagSelectionProvided = 'targetTagIds' in body || 'targetTagId' in body;
+
+    // 互換フィールド経由でタグ集合が静かに 1 件へ狭まるのを防ぐ（PR #52 レビュー指摘 2-2）。
+    // 保存済みが 2 件以上の配信で `targetTagId` だけが来ると、validateTargetTagIds は
+    // それを「単独指定」と解釈して集合を上書きしてしまう。serializeBroadcast は互換のため
+    // 先頭のタグを `targetTagId` に載せて返すので、それを送り返すクライアント
+    // （MCP の manage_broadcasts など）で起こりうる。変更するなら targetTagIds を明示させる。
+    if (
+      existing.target_type === 'tag' &&
+      effectiveTargetType === 'tag' &&
+      !('targetTagIds' in body) &&
+      'targetTagId' in body &&
+      getBroadcastTargetTagIds(existing).length >= 2
+    ) {
+      return c.json({
+        success: false,
+        error: '複数のタグが保存されている配信では、targetTagId だけでタグを変更できません。targetTagIds を指定してください。',
+      }, 400);
+    }
     let normalizedTargetTagIds: string[] | undefined;
     if (effectiveTargetType === 'tag' && (tagSelectionProvided || existing.target_type !== 'tag')) {
       const validated = await validateTargetTagIds(c.env.DB, body);

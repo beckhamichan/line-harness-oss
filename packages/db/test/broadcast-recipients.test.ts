@@ -90,6 +90,31 @@ describe('resolveTagBroadcastRecipients', () => {
     expect(recipients.map((friend) => friend.id)).toEqual(['friend-b', 'friend-a']);
   });
 
+  it('excludes friends whose line_account_id is NULL when an account is specified', async () => {
+    // 本番の友だちは line_account_id が空のものが多い（2026-09-20 時点で 577 人中 577 人）。
+    // アカウント指定ありの配信では、それらは対象外になる。アカウント未登録の運用では
+    // 配信側も line_account_id が空なので絞り込みが発動せず全員が対象になるが、
+    // アカウントを登録した途端に対象 0 人になりうる。その挙動をここで固定する
+    // （ISSUE-0081: アカウント登録前に友だちのアカウント欄を埋める）。
+    sqlite
+      .prepare(
+        `INSERT INTO friends (id, line_user_id, is_following, line_account_id, created_at, updated_at)
+         VALUES ('friend-null', 'Un', 1, NULL, '2026-01-05', '2026-01-05')`,
+      )
+      .run();
+    sqlite.prepare(`INSERT INTO friend_tags (friend_id, tag_id) VALUES ('friend-null', 'tag-a')`).run();
+
+    const scoped = await resolveTagBroadcastRecipients(db, {
+      tagIds: ['tag-a'],
+      lineAccountId: 'account-1',
+    });
+    expect(scoped.map((friend) => friend.id)).not.toContain('friend-null');
+
+    // アカウント未指定なら従来どおり含まれる
+    const unscoped = await resolveTagBroadcastRecipients(db, { tagIds: ['tag-a'] });
+    expect(unscoped.map((friend) => friend.id)).toContain('friend-null');
+  });
+
   it('continues with remaining tags when only some saved tags were deleted', async () => {
     const recipients = await resolveTagBroadcastRecipients(db, {
       tagIds: ['deleted-tag', 'tag-b'],

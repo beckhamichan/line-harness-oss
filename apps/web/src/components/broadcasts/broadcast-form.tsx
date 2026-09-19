@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import type { Tag } from '@line-crm/shared'
-import { api, eventsApi, type ApiBroadcast, type EventListItem } from '@/lib/api'
+import { api, eventsApi, getApiErrorReason, type ApiBroadcast, type EventListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import FlexPreviewComponent from '@/components/flex-preview'
 import TapImageBuilder from '@/components/scenarios/tap-image-builder'
@@ -109,8 +109,9 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
       } else {
         setError(res.error)
       }
-    } catch {
-      setError('作成に失敗しました')
+    } catch (err) {
+      // fetchApi はサーバーの理由（例: 配信禁止時間帯）を Error.message に載せる
+      setError(getApiErrorReason(err) ?? '作成に失敗しました')
     } finally {
       setSaving(false)
     }

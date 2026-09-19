@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { api, type ApiBroadcast, type BroadcastInsight } from '@/lib/api'
+import { api, getApiErrorReason, type ApiBroadcast, type BroadcastInsight } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
@@ -156,8 +156,9 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
     try {
       await api.broadcasts.send(id)
       load()
-    } catch {
-      setError('送信に失敗しました')
+    } catch (err) {
+      // 例: 配信禁止時間帯は 400 + 理由が返る。理由があれば見せる。
+      setError(getApiErrorReason(err) ?? '送信に失敗しました')
     } finally {
       setSending(false)
     }
