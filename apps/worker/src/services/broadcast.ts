@@ -5,7 +5,8 @@ import {
   getQueuedBroadcasts,
   updateBroadcastStatus,
   updateBroadcastBatchProgress,
-  getFriendsByTag,
+  getBroadcastTargetTagIds,
+  resolveTagBroadcastRecipients,
   jstNow,
   updateBroadcastLineRequestId,
   createBroadcastInsight,
@@ -73,12 +74,11 @@ export async function processBroadcastSend(
       totalCount = 0;
       successCount = 0;
     } else if (broadcast.target_type === 'tag') {
-      if (!broadcast.target_tag_id) {
-        throw new Error('target_tag_id is required for tag-targeted broadcasts');
-      }
-
-      const friends = await getFriendsByTag(db, broadcast.target_tag_id);
-      const followingFriends = friends.filter((f) => f.is_following);
+      const rawBroadcast = broadcast as unknown as Record<string, unknown>;
+      const followingFriends = await resolveTagBroadcastRecipients(db, {
+        tagIds: getBroadcastTargetTagIds(broadcast),
+        lineAccountId: (rawBroadcast.line_account_id as string | null) ?? null,
+      });
       totalCount = followingFriends.length;
 
       // Send in batches with stealth delays to mimic human patterns
@@ -301,7 +301,13 @@ async function processQueuedBroadcastBatches(
   // 対象ユーザーリストを取得（アカウントで絞り込む）
   const accountId = raw.line_account_id as string | null;
   let friends: Array<{ id: string; line_user_id: string }>;
-  if (segmentConditionsStr) {
+  if (broadcast.target_type === 'tag') {
+    const tagFriends = await resolveTagBroadcastRecipients(db, {
+      tagIds: getBroadcastTargetTagIds(broadcast),
+      lineAccountId: accountId,
+    });
+    friends = tagFriends.map((friend) => ({ id: friend.id, line_user_id: friend.line_user_id }));
+  } else if (segmentConditionsStr) {
     const { buildSegmentQuery } = await import('./segment-query.js');
     const condition = JSON.parse(segmentConditionsStr);
     const { sql, bindings } = buildSegmentQuery(condition);
@@ -314,10 +320,6 @@ async function processQueuedBroadcastBatches(
     }
     const result = await db.prepare(accountSql).bind(...accountBindings).all<{ id: string; line_user_id: string }>();
     friends = result.results ?? [];
-  } else if (broadcast.target_tag_id) {
-    const { getFriendsByTag } = await import('@line-crm/db');
-    const tagFriends = await getFriendsByTag(db, broadcast.target_tag_id);
-    friends = tagFriends.filter(f => f.is_following).map(f => ({ id: f.id, line_user_id: f.line_user_id }));
   } else {
     // target_type='all' でキューに入ることはないが、念のため
     const { requestId } = await lineClient.broadcast([message]);

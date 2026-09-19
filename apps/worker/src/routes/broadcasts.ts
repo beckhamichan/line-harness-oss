@@ -5,6 +5,9 @@ import {
   createBroadcast,
   updateBroadcast,
   deleteBroadcast,
+  getBroadcastTargetTagIds,
+  resolveTagBroadcastRecipients,
+  BroadcastTargetTagsMissingError,
 } from '@line-crm/db';
 import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
@@ -39,13 +42,15 @@ function parseJsonArray(s: unknown): string[] | null {
 
 function serializeBroadcast(row: DbBroadcast) {
   const r = row as unknown as Record<string, unknown>;
+  const targetTagIds = getBroadcastTargetTagIds(row);
   return {
     id: row.id,
     title: row.title,
     messageType: row.message_type,
     messageContent: row.message_content,
     targetType: row.target_type,
-    targetTagId: row.target_tag_id,
+    targetTagId: row.target_tag_id ?? targetTagIds[0] ?? null,
+    targetTagIds,
     status: row.status,
     scheduledAt: row.scheduled_at,
     sentAt: row.sent_at,
@@ -59,6 +64,42 @@ function serializeBroadcast(row: DbBroadcast) {
     failedAccountIds: parseJsonArray(r.failed_account_ids),
     createdAt: row.created_at,
   };
+}
+
+async function validateTargetTagIds(
+  db: D1Database,
+  input: { targetTagIds?: unknown; targetTagId?: unknown },
+): Promise<{ tagIds: string[] } | { error: string }> {
+  let rawIds: unknown[];
+  if (input.targetTagIds !== undefined) {
+    if (!Array.isArray(input.targetTagIds)) {
+      return { error: 'targetTagIds must be an array' };
+    }
+    rawIds = input.targetTagIds;
+  } else if (input.targetTagId !== undefined && input.targetTagId !== null) {
+    rawIds = [input.targetTagId];
+  } else {
+    rawIds = [];
+  }
+
+  if (rawIds.some((id) => typeof id !== 'string' || id.trim().length === 0)) {
+    return { error: 'targetTagIds must contain only non-empty strings' };
+  }
+  const tagIds = [...new Set((rawIds as string[]).map((id) => id.trim()))];
+  if (tagIds.length < 1 || tagIds.length > 20) {
+    return { error: 'targetTagIds must contain between 1 and 20 unique tags' };
+  }
+
+  const placeholders = tagIds.map(() => '?').join(', ');
+  const existing = await db
+    .prepare(`SELECT id FROM tags WHERE id IN (${placeholders})`)
+    .bind(...tagIds)
+    .all<{ id: string }>();
+  const existingIds = new Set((existing.results ?? []).map((row) => row.id));
+  if (tagIds.some((id) => !existingIds.has(id))) {
+    return { error: 'One or more targetTagIds do not exist' };
+  }
+  return { tagIds };
 }
 
 // GET /api/broadcasts - list all
@@ -129,16 +170,12 @@ broadcasts.get('/api/broadcasts/:id/preview-count', async (c) => {
       }
       count = active;
       perAccount = breakdown;
-    } else if (broadcast.target_type === 'tag' && broadcast.target_tag_id) {
-      // 注: ここは inline send パス (broadcast.ts:61 getFriendsByTag) が
-      // line_account_id でフィルタしないので、preview もアカウント横断で数える。
-      // 実際の送信先と modal 表示を一致させるための整合性。
-      const row = await c.env.DB.prepare(
-        `SELECT COUNT(*) AS cnt FROM friends f
-           INNER JOIN friend_tags ft ON ft.friend_id = f.id
-           WHERE ft.tag_id = ? AND f.is_following = 1`,
-      ).bind(broadcast.target_tag_id).first<{ cnt: number }>();
-      count = row?.cnt ?? 0;
+    } else if (broadcast.target_type === 'tag') {
+      const recipients = await resolveTagBroadcastRecipients(c.env.DB, {
+        tagIds: getBroadcastTargetTagIds(broadcast),
+        lineAccountId: (raw.line_account_id as string | null) ?? null,
+      });
+      count = recipients.length;
     } else if (broadcast.target_type === 'all') {
       const accountId = (raw.line_account_id as string | null) || null;
       const sql = accountId
@@ -152,6 +189,9 @@ broadcasts.get('/api/broadcasts/:id/preview-count', async (c) => {
     return c.json({ success: true, data: { count, perAccount } });
   } catch (err) {
     console.error('GET /api/broadcasts/:id/preview-count error:', err);
+    if (err instanceof BroadcastTargetTagsMissingError) {
+      return c.json({ success: false, error: err.message }, 400);
+    }
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -266,6 +306,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       messageContent: string;
       targetType: BroadcastTargetType;
       targetTagId?: string | null;
+      targetTagIds?: string[];
       scheduledAt?: string | null;
       lineAccountId?: string | null;
       altText?: string | null;
@@ -280,11 +321,13 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
-    if (body.targetType === 'tag' && !body.targetTagId) {
-      return c.json(
-        { success: false, error: 'targetTagId is required when targetType is "tag"' },
-        400,
-      );
+    let targetTagIds: string[] | undefined;
+    if (body.targetType === 'tag') {
+      const validated = await validateTargetTagIds(c.env.DB, body);
+      if ('error' in validated) {
+        return c.json({ success: false, error: validated.error }, 400);
+      }
+      targetTagIds = validated.tagIds;
     }
 
     if (body.targetType === 'multi-account-dedup') {
@@ -304,7 +347,10 @@ broadcasts.post('/api/broadcasts', async (c) => {
       messageType: body.messageType,
       messageContent: body.messageContent,
       targetType: body.targetType,
-      targetTagId: body.targetTagId ?? null,
+      targetTagId: body.targetType === 'tag'
+        ? targetTagIds!.length === 1 ? targetTagIds![0] : null
+        : body.targetTagId ?? null,
+      targetTagIds: body.targetType === 'tag' ? targetTagIds : null,
       scheduledAt: body.scheduledAt ?? null,
       accountIds: body.accountIds,
       dedupPriority: body.dedupPriority,
@@ -348,6 +394,7 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       messageContent?: string;
       targetType?: BroadcastTargetType;
       targetTagId?: string | null;
+      targetTagIds?: string[];
       scheduledAt?: string | null;
     }>();
 
@@ -357,12 +404,37 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       statusUpdate = body.scheduledAt ? 'scheduled' : 'draft';
     }
 
+    const effectiveTargetType = body.targetType ?? existing.target_type;
+    const tagSelectionProvided = 'targetTagIds' in body || 'targetTagId' in body;
+    let normalizedTargetTagIds: string[] | undefined;
+    if (effectiveTargetType === 'tag' && (tagSelectionProvided || existing.target_type !== 'tag')) {
+      const validated = await validateTargetTagIds(c.env.DB, body);
+      if ('error' in validated) {
+        return c.json({ success: false, error: validated.error }, 400);
+      }
+      normalizedTargetTagIds = validated.tagIds;
+    }
+
+    const targetUpdates: { target_tag_id?: string | null; target_tag_ids?: string | null } = {};
+    if (effectiveTargetType === 'tag' && normalizedTargetTagIds) {
+      targetUpdates.target_tag_id = normalizedTargetTagIds.length === 1 ? normalizedTargetTagIds[0] : null;
+      targetUpdates.target_tag_ids = JSON.stringify(normalizedTargetTagIds);
+    } else if (effectiveTargetType === 'multi-account-dedup' && (
+      'targetTagId' in body || body.targetType !== undefined
+    )) {
+      targetUpdates.target_tag_ids = null;
+      targetUpdates.target_tag_id = body.targetTagId ?? null;
+    } else if (body.targetType !== undefined && body.targetType !== 'tag') {
+      targetUpdates.target_tag_ids = null;
+      targetUpdates.target_tag_id = null;
+    }
+
     const updated = await updateBroadcast(c.env.DB, id, {
       title: body.title,
       message_type: body.messageType,
       message_content: body.messageContent,
       target_type: body.targetType,
-      target_tag_id: body.targetTagId,
+      ...targetUpdates,
       scheduled_at: body.scheduledAt,
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
@@ -495,14 +567,17 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     }
 
     // target_type='tag' で対象が多い場合はキュー方式
-    if (existing.target_type === 'tag' && existing.target_tag_id) {
-      const { getFriendsByTag } = await import('@line-crm/db');
-      const friends = await getFriendsByTag(c.env.DB, existing.target_tag_id);
-      const followingCount = friends.filter(f => f.is_following).length;
+    if (existing.target_type === 'tag') {
+      const rawExisting = existing as unknown as Record<string, unknown>;
+      const friends = await resolveTagBroadcastRecipients(c.env.DB, {
+        tagIds: getBroadcastTargetTagIds(existing),
+        lineAccountId: (rawExisting.line_account_id as string | null) ?? null,
+      });
+      const followingCount = friends.length;
 
       if (followingCount > 500) {
         // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
-        const tagMarker = JSON.stringify({ operator: 'AND', rules: [{ type: 'tag_exists', value: existing.target_tag_id }] });
+        const tagMarker = JSON.stringify({ kind: 'tag_or_queued' });
         const lockResult = await c.env.DB.prepare(
           `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
         ).bind(tagMarker, id).run();
@@ -564,6 +639,9 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send error:', err);
+    if (err instanceof BroadcastTargetTagsMissingError) {
+      return c.json({ success: false, error: err.message }, 400);
+    }
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
