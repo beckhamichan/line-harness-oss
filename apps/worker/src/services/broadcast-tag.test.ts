@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dbMocks = {
   getBroadcastById: vi.fn(),
@@ -42,7 +42,15 @@ function makeBroadcast() {
 }
 
 describe('processBroadcastSend tag recipients', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    // 配信禁止帯ガード（ISSUE-0080）が入ったため、送信経路のテストは時刻を固定する。
+    // 2026-09-20 12:00 JST = 03:00 UTC（許可帯）。
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.UTC(2026, 8, 20, 3, 0, 0)));
     for (const mock of Object.values(dbMocks)) mock.mockReset();
     dbMocks.jstNow.mockReturnValue('2026-09-20T12:00:00+09:00');
     dbMocks.getBroadcastTargetTagIds.mockReturnValue(['tag-a', 'tag-b']);

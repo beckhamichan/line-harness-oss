@@ -12,6 +12,7 @@ import {
 import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import { processBroadcastSend, buildMessage, processQueuedBroadcasts } from '../services/broadcast.js';
+import { isDeliveryAllowed, isScheduledAtInQuietHours, DeliveryWindowBlockedError } from '../services/delivery-window.js';
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
@@ -321,6 +322,10 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
+    if (isScheduledAtInQuietHours(body.scheduledAt)) {
+      return c.json({ success: false, error: '配信禁止時間帯（JST 23:00〜翌7:00）は予約できません。7:00以降の日時を指定してください。' }, 400);
+    }
+
     let targetTagIds: string[] | undefined;
     if (body.targetType === 'tag') {
       const validated = await validateTargetTagIds(c.env.DB, body);
@@ -397,6 +402,10 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetTagIds?: string[];
       scheduledAt?: string | null;
     }>();
+
+    if (isScheduledAtInQuietHours(body.scheduledAt)) {
+      return c.json({ success: false, error: '配信禁止時間帯（JST 23:00〜翌7:00）は予約できません。7:00以降の日時を指定してください。' }, 400);
+    }
 
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
@@ -497,6 +506,12 @@ broadcasts.delete('/api/broadcasts/:id', async (c) => {
 // 守ったが、API direct 経路は未対応のままだった。
 broadcasts.post('/api/broadcasts/:id/send', async (c) => {
   try {
+    // 送信時ガード（ISSUE-0080）: 手動送信にも例外は設けない（AGENTS.md §4）。
+    // 送信処理へ入る前・status を動かす前に弾く。
+    if (!isDeliveryAllowed()) {
+      return c.json({ success: false, error: '配信禁止時間帯（JST 23:00〜翌7:00）のため送信できません。7:00以降に送信してください。' }, 400);
+    }
+
     const id = c.req.param('id');
     const existing = await getBroadcastById(c.env.DB, id);
 
@@ -639,6 +654,9 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send error:', err);
+    if (err instanceof DeliveryWindowBlockedError) {
+      return c.json({ success: false, error: err.message }, 400);
+    }
     if (err instanceof BroadcastTargetTagsMissingError) {
       return c.json({ success: false, error: err.message }, 400);
     }
@@ -885,6 +903,12 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', async (c) => {
 broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
   const id = c.req.param('id');
   try {
+    // 送信時ガード（ISSUE-0080）: テスト送信も禁止帯の対象（AGENTS.md §4）。
+    // 送信先が自分だけでも、LINE 上は通常の push と同じ扱いになるため。
+    if (!isDeliveryAllowed()) {
+      return c.json({ success: false, error: '配信禁止時間帯（JST 23:00〜翌7:00）のため送信できません。7:00以降に送信してください。' }, 400);
+    }
+
     const broadcast = await getBroadcastById(c.env.DB, id);
     if (!broadcast) return c.json({ success: false, error: 'Broadcast not found' }, 404);
     if (broadcast.status !== 'draft') {

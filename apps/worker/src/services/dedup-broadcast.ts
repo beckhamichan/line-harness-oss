@@ -187,6 +187,15 @@ import { getLineAccountById, jstNow, updateBroadcastLineRequestId } from '@line-
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
 import { renderMessageContent } from './render-message.js';
 import { buildMessage } from './broadcast.js';
+import { isDeliveryAllowed } from './delivery-window.js';
+
+/** 禁止帯に入ったため送信ループを中断する内部シグナル（失敗ではない）。 */
+class DeliveryWindowPause extends Error {
+  constructor() {
+    super('delivery window closed');
+    this.name = 'DeliveryWindowPause';
+  }
+}
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -194,6 +203,12 @@ export interface ProcessMultiAccountDedupResult {
   totalCount: number;
   successCount: number;
   failedAccountIds: string[];
+  /**
+   * 配信禁止帯に入ったため途中で中断した場合に true（ISSUE-0080）。
+   * 失敗ではないので failedAccountIds には入れない。呼び出し側はこのとき
+   * status を 'sent' にせず 'sending' のまま残し、7:00 以降の再開に委ねる。
+   */
+  pausedByDeliveryWindow?: boolean;
 }
 
 /**
@@ -296,6 +311,7 @@ export async function processMultiAccountDedupBroadcast(
   const allIdentKeys = new Set<string>(progress.sentIdentKeys);
 
   const failedAccountIds: string[] = [];
+  let pausedByDeliveryWindow = false;
 
   // 単一 broadcast-wide unit を全アカウント multicast で共有する。各 LINE
   // チャネルは独立した unit namespace を持つので「同じ名前で別カウント」が
@@ -349,6 +365,14 @@ export async function processMultiAccountDedupBroadcast(
           await sleep(calculateStaggerDelay(remaining.length, batchIdx));
         }
 
+        // 送信時ガード（ISSUE-0080）: 複数アカウントを順に回るため実行が長い。
+        // 23:00 を跨いだらここで止める。送信済みは progress.sentIdentKeys に
+        // 永続化済みなので、7:00 以降の cron が残りだけを送り直す（重複しない）。
+        if (!isDeliveryAllowed()) {
+          console.log('[multi-account-dedup] delivery window closed mid-run; pausing');
+          throw new DeliveryWindowPause();
+        }
+
         let batchMessage = message;
         if (message.type === 'text' && totalBatches > 1) {
           batchMessage = { ...message, text: addMessageVariation(message.text, batchIdx) } as Message;
@@ -383,6 +407,12 @@ export async function processMultiAccountDedupBroadcast(
         await db.batch(stmts);
       }
     } catch (err) {
+      if (err instanceof DeliveryWindowPause) {
+        // 禁止帯による中断。このアカウントは「失敗」ではないので記録しない。
+        // 送信済みの identKey は batch ごとに永続化済みなので、再開時は残りだけ送る。
+        pausedByDeliveryWindow = true;
+        break;
+      }
       console.error(`[multi-account-dedup] account ${account.id} failed:`, err);
       failedAccountIds.push(account.id);
     }
@@ -410,5 +440,5 @@ export async function processMultiAccountDedupBroadcast(
   // この関数の return 後・status='sent' 確定前に Worker crash した場合は dedup_progress
   // が残ったままで status='sending', batch_offset=-1 になり、recoverStalledBroadcasts が
   // 再投入して resume → 完走済みアカは batchOffset >= recipients.length で skip → 重複なし。
-  return { totalCount, successCount, failedAccountIds };
+  return { totalCount, successCount, failedAccountIds, pausedByDeliveryWindow };
 }

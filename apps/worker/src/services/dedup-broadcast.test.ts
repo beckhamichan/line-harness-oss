@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { computeDedupBroadcastPreview } from './dedup-broadcast.js';
 
 interface CannedData {
@@ -388,7 +388,15 @@ function makeSendDb(opts: {
 const sampleMessage: Message = { type: 'text', text: 'hello' } as Message;
 
 describe('processMultiAccountDedupBroadcast', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    // 配信禁止帯ガード（ISSUE-0080）が入ったため、時刻を許可帯に固定する。
+    // 2026-09-20 12:00 JST = 03:00 UTC。
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.UTC(2026, 8, 20, 3, 0, 0)));
     vi.clearAllMocks();
   });
 

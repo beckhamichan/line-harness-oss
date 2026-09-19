@@ -15,6 +15,7 @@ import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import { assertDeliveryAllowed, isDeliveryAllowed } from './delivery-window.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -23,7 +24,13 @@ export async function processBroadcastSend(
   lineClient: LineClient,
   broadcastId: string,
   workerUrl?: string,
+  nowFn: () => number = Date.now,
 ): Promise<Broadcast> {
+  // 送信時ガード（ISSUE-0080）: 禁止帯では 1 通も送らない。
+  // status を 'sending' へ動かす前に投げる。ここで止めれば draft のまま残り、
+  // 7:00 以降に同じ下書きをそのまま送れる。
+  assertDeliveryAllowed(nowFn());
+
   // Mark as sending
   await updateBroadcastStatus(db, broadcastId, 'sending');
 
@@ -134,6 +141,11 @@ export async function processBroadcastSend(
       const result = await processMultiAccountDedupBroadcast(db, broadcastForDedup);
       totalCount = result.totalCount;
       successCount = result.successCount;
+      if (result.pausedByDeliveryWindow) {
+        // 禁止帯で中断（ISSUE-0080）。未完了を完了にしない。status='sending' のまま
+        // 残し、recoverStalledBroadcasts → 7:00 以降の cron が残りを送る。
+        return (await getBroadcastById(db, broadcastId))!;
+      }
     }
 
     await createBroadcastInsight(db, broadcast.id);
@@ -151,7 +163,13 @@ export async function processScheduledBroadcasts(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  nowFn: () => number = Date.now,
 ): Promise<void> {
+  // 送信時ガード（ISSUE-0080）: 禁止帯の cron では予約配信を一切拾わない。
+  // 予約時刻は書き換えない。滞留分は 7:00 以降の最初の cron でそのまま送られる
+  // （cron 停止 → 深夜復帰で一斉に流れるのを防ぐ。PR #32 と同じ方針）。
+  if (!isDeliveryAllowed(nowFn())) return;
+
   const allBroadcasts = await getBroadcasts(db);
 
   const nowMs = Date.now();
@@ -205,7 +223,12 @@ export async function processQueuedBroadcasts(
   db: D1Database,
   lineClient: LineClient,
   workerUrl?: string,
+  nowFn: () => number = Date.now,
 ): Promise<void> {
+  // 送信時ガード（ISSUE-0080）: 禁止帯の cron ではキューを進めない。
+  // batch_offset は据え置きのまま。7:00 以降の cron が続きから再開する。
+  if (!isDeliveryAllowed(nowFn())) return;
+
   const queued = await getQueuedBroadcasts(db);
   for (const broadcast of queued) {
     // アカウント別のlineClientを解決
@@ -218,7 +241,7 @@ export async function processQueuedBroadcasts(
     }
 
     try {
-      await processQueuedBroadcastBatches(db, client, broadcast, workerUrl);
+      await processQueuedBroadcastBatches(db, client, broadcast, workerUrl, nowFn);
     } catch (err) {
       console.error(`Failed to process queued broadcast ${broadcast.id}:`, err);
     }
@@ -230,6 +253,7 @@ async function processQueuedBroadcastBatches(
   lineClient: LineClient,
   broadcast: import('@line-crm/db').Broadcast,
   workerUrl?: string,
+  nowFn: () => number = Date.now,
 ): Promise<void> {
   const raw = broadcast as unknown as Record<string, unknown>;
   const segmentConditionsStr = raw.segment_conditions as string | null;
@@ -290,6 +314,11 @@ async function processQueuedBroadcastBatches(
     const { processMultiAccountDedupBroadcast } = await import('./dedup-broadcast.js');
     const broadcastForDedup = { ...broadcast, message_type: finalType, message_content: finalContent };
     const result = await processMultiAccountDedupBroadcast(db, broadcastForDedup);
+    if (result.pausedByDeliveryWindow) {
+      // 禁止帯で中断（ISSUE-0080）。'sent' にせず、ロックだけ解除して再開に委ねる。
+      await updateBroadcastBatchProgress(db, broadcast.id, 0, 0);
+      return;
+    }
     await createBroadcastInsight(db, broadcast.id);
     await updateBroadcastStatus(db, broadcast.id, 'sent', {
       totalCount: result.totalCount,
@@ -350,6 +379,16 @@ async function processQueuedBroadcastBatches(
     if (batchIndex > 0) {
       const delay = calculateStaggerDelay(friends.length, batchIndex);
       await sleep(delay);
+    }
+
+    // 送信時ガード（ISSUE-0080）: 長い分割送信が 23:00 を跨ぐ場合、ここで中断する。
+    // ステルス遅延の sleep を挟むため、ループ突入時は許可帯でもバッチ境界で禁止帯へ
+    // 入りうる。失敗時と同じ「offset を保存してロック解除」で次の cron に委ねる。
+    // 送信済みぶんはそのまま。残りは 7:00 以降の cron が続きから送る。
+    if (!isDeliveryAllowed(nowFn())) {
+      console.log(`[broadcast] delivery window closed mid-run; pausing ${broadcast.id} at offset ${currentOffset}`);
+      await updateBroadcastBatchProgress(db, broadcast.id, currentOffset, 0);
+      return;
     }
 
     // テキストメッセージのバリエーション
