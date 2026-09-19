@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { api } from '@/lib/api'
+import { api, getApiErrorReason } from '@/lib/api'
 
 interface TestSendSectionProps {
   broadcastId: string
@@ -12,7 +12,7 @@ interface TestSendSectionProps {
 export default function TestSendSection({ broadcastId, accountId, disabled }: TestSendSectionProps) {
   const [recipients, setRecipients] = useState<Array<{ id: string; displayName: string; pictureUrl: string | null }>>([])
   const [sending, setSending] = useState(false)
-  const [result, setResult] = useState<{ sent: number; failed: number; at: string; error?: boolean } | null>(null)
+  const [result, setResult] = useState<{ sent: number; failed: number; at: string; error?: boolean; reason?: string } | null>(null)
   const [cooldown, setCooldown] = useState(false)
 
   useEffect(() => {
@@ -34,8 +34,8 @@ export default function TestSendSection({ broadcastId, accountId, disabled }: Te
         setCooldown(true)
         setTimeout(() => setCooldown(false), 10000)
       }
-    } catch {
-      setResult({ sent: 0, failed: 0, at: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }), error: true })
+    } catch (err) {
+      setResult({ sent: 0, failed: 0, at: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }), error: true, reason: getApiErrorReason(err) })
     } finally { setSending(false) }
   }
 
@@ -64,7 +64,7 @@ export default function TestSendSection({ broadcastId, accountId, disabled }: Te
           {result && (
             <p className={`text-xs mt-2 ${result.error ? 'text-red-600' : 'text-green-600'}`}>
               {result.error
-                ? `${result.at} テスト送信に失敗しました`
+                ? `${result.at} ${result.reason ?? 'テスト送信に失敗しました'}`
                 : `${result.at} テスト送信済み (${result.sent}名成功${result.failed > 0 ? `, ${result.failed}名失敗` : ''})`}
             </p>
           )}

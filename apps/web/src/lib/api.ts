@@ -84,6 +84,18 @@ export function setCsrfToken(token: string | undefined | null): void {
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
+/**
+ * catch した値から、利用者に見せてよい理由だけを取り出す。
+ * fetchApi が投げる素のステータス文言（`API error: 400`）や、理由が空のときは
+ * undefined を返し、呼び出し側が自分の固定文言に戻れるようにする。
+ */
+export function getApiErrorReason(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined
+  const message = err.message
+  if (!message || message.startsWith('API error:')) return undefined
+  return message
+}
+
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase()
   const csrfHeaders: Record<string, string> = {}
@@ -101,7 +113,20 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) {
+    // サーバーが理由を返しているときは、それを利用者に見せる。
+    // 例: 配信禁止時間帯の予約は 400 + 日本語の理由が返る。以前は理由を捨てて
+    // 「API error: 400」だけを投げていたため、画面には固定文言しか出なかった。
+    // 本文が JSON でない・error が無い場合は従来の文言に戻る（互換）。
+    let reason: string | undefined
+    try {
+      const body = (await res.json()) as { error?: unknown }
+      if (typeof body?.error === 'string' && body.error.length > 0) reason = body.error
+    } catch {
+      // 本文が読めなくても、ステータスだけで従来どおり投げる
+    }
+    throw new Error(reason ?? `API error: ${res.status}`)
+  }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
