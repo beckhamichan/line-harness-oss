@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   message_content TEXT NOT NULL,
   target_type     TEXT NOT NULL CHECK (target_type IN ('all', 'tag', 'segment', 'multi-account-dedup')) DEFAULT 'all',
   target_tag_id   TEXT REFERENCES tags (id) ON DELETE SET NULL,
+  target_tag_ids  TEXT CHECK (target_tag_ids IS NULL OR json_valid(target_tag_ids)),
   status          TEXT NOT NULL CHECK (status IN ('draft', 'scheduled', 'sending', 'sent')) DEFAULT 'draft',
   scheduled_at    TEXT,
   sent_at         TEXT,
