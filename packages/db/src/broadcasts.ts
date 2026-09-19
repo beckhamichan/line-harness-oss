@@ -10,6 +10,7 @@ export interface Broadcast {
   message_content: string;
   target_type: BroadcastTargetType;
   target_tag_id: string | null;
+  target_tag_ids: string | null;
   status: BroadcastStatus;
   scheduled_at: string | null;
   sent_at: string | null;
@@ -80,6 +81,7 @@ export interface CreateBroadcastInput {
   messageContent: string;
   targetType: BroadcastTargetType;
   targetTagId?: string | null;
+  targetTagIds?: string[] | null;
   scheduledAt?: string | null;
   accountIds?: string[];
   dedupPriority?: string[];
@@ -97,8 +99,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, target_tag_ids, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -107,6 +109,7 @@ export async function createBroadcast(
       input.messageContent,
       input.targetType,
       input.targetTagId ?? null,
+      input.targetTagIds ? JSON.stringify(input.targetTagIds) : null,
       initialStatus,
       input.scheduledAt ?? null,
       input.accountIds ? JSON.stringify(input.accountIds) : null,
@@ -126,6 +129,7 @@ export type UpdateBroadcastInput = Partial<
     | 'message_content'
     | 'target_type'
     | 'target_tag_id'
+    | 'target_tag_ids'
     | 'status'
     | 'scheduled_at'
   >
@@ -158,6 +162,10 @@ export async function updateBroadcast(
   if (updates.target_tag_id !== undefined) {
     fields.push('target_tag_id = ?');
     values.push(updates.target_tag_id);
+  }
+  if (updates.target_tag_ids !== undefined) {
+    fields.push('target_tag_ids = ?');
+    values.push(updates.target_tag_ids);
   }
   if (updates.status !== undefined) {
     fields.push('status = ?');

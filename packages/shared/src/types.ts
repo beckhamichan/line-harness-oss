@@ -251,6 +251,8 @@ export interface Broadcast {
   targetType: BroadcastTargetType;
   /** 対象タグID (targetType が 'tag' の場合のみ使用) */
   targetTagId: string | null;
+  /** 対象タグID一覧（通常タグ配信ではOR条件） */
+  targetTagIds: string[];
   /** 配信ステータス */
   status: BroadcastStatus;
   /** 予約配信日時 (ISO 8601、即時配信の場合は null) */

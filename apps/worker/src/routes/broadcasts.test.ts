@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 
+class BroadcastTargetTagsMissingError extends Error {}
+
 const dbMocks = {
   getBroadcasts: vi.fn(),
   getBroadcastById: vi.fn(),
@@ -8,6 +10,9 @@ const dbMocks = {
   updateBroadcast: vi.fn(),
   deleteBroadcast: vi.fn(),
   getLineAccountById: vi.fn(),
+  getBroadcastTargetTagIds: vi.fn(),
+  resolveTagBroadcastRecipients: vi.fn(),
+  BroadcastTargetTagsMissingError,
   jstNow: vi.fn(() => '2026-07-11T21:00:00+09:00'),
 };
 vi.mock('@line-crm/db', () => dbMocks);
@@ -49,6 +54,7 @@ function makeBroadcast(sentAt: string | null) {
     message_content: 'hello',
     target_type: 'all',
     target_tag_id: null,
+    target_tag_ids: null,
     status: 'sent',
     scheduled_at: null,
     sent_at: sentAt,
@@ -63,7 +69,7 @@ function makeBroadcast(sentAt: string | null) {
   };
 }
 
-function makeDb() {
+function makeDb(existingTagIds?: string[]) {
   const calls: { sql: string; binds: unknown[] }[] = [];
   const db = {
     prepare(sql: string) {
@@ -94,6 +100,16 @@ function makeDb() {
           calls.push({ sql, binds });
           return { success: true, meta: { changes: 1 } };
         },
+        async all<T>() {
+          calls.push({ sql, binds });
+          const ids = existingTagIds ?? binds.map(String);
+          return {
+            results: binds
+              .map(String)
+              .filter((id) => ids.includes(id))
+              .map((id) => ({ id })) as T[],
+          };
+        },
       };
       return stmt;
     },
@@ -114,10 +130,247 @@ function setupApp(db: D1Database) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-07-11T21:00:00+09:00'));
-  for (const fn of Object.values(dbMocks)) fn.mockReset();
+  for (const fn of Object.values(dbMocks)) {
+    if (vi.isMockFunction(fn)) fn.mockReset();
+  }
   dbMocks.jstNow.mockReturnValue('2026-07-11T21:00:00+09:00');
+  dbMocks.getBroadcastTargetTagIds.mockImplementation((broadcast: { target_tag_ids?: string | null; target_tag_id?: string | null }) => {
+    if (broadcast.target_tag_ids) return JSON.parse(broadcast.target_tag_ids);
+    return broadcast.target_tag_id ? [broadcast.target_tag_id] : [];
+  });
   lineClientMocks.getMessageEventInsight.mockReset();
   lineClientMocks.getUnitInsight.mockReset();
+});
+
+describe('standard tag broadcast targeting', () => {
+  test('creates an OR-targeted broadcast with unique tag ids and null legacy id', async () => {
+    const created = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: null,
+      target_tag_ids: '["tag-a","tag-b"]',
+      status: 'draft',
+    };
+    dbMocks.createBroadcast.mockResolvedValue(created);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Tag broadcast',
+        messageType: 'text',
+        messageContent: 'hello',
+        targetType: 'tag',
+        targetTagIds: ['tag-a', 'tag-b', 'tag-a'],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createBroadcast).toHaveBeenCalledWith(db, expect.objectContaining({
+      targetTagId: null,
+      targetTagIds: ['tag-a', 'tag-b'],
+    }));
+    expect(await res.json()).toMatchObject({
+      success: true,
+      data: { targetTagId: 'tag-a', targetTagIds: ['tag-a', 'tag-b'] },
+    });
+  });
+
+  test('accepts the legacy targetTagId input and writes both columns', async () => {
+    const created = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: 'tag-a',
+      target_tag_ids: '["tag-a"]',
+      status: 'draft',
+    };
+    dbMocks.createBroadcast.mockResolvedValue(created);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Legacy tag broadcast',
+        messageType: 'text',
+        messageContent: 'hello',
+        targetType: 'tag',
+        targetTagId: 'tag-a',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createBroadcast).toHaveBeenCalledWith(db, expect.objectContaining({
+      targetTagId: 'tag-a',
+      targetTagIds: ['tag-a'],
+    }));
+  });
+
+  test('rejects empty, missing, or more than 20 unique tags', async () => {
+    const app = setupApp(makeDb().db);
+    const base = {
+      title: 'Tag broadcast',
+      messageType: 'text',
+      messageContent: 'hello',
+      targetType: 'tag',
+    };
+
+    for (const targetTagIds of [[], [''], Array.from({ length: 21 }, (_, index) => `tag-${index}`)]) {
+      const res = await app.request('/api/broadcasts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...base, targetTagIds }),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(dbMocks.createBroadcast).not.toHaveBeenCalled();
+  });
+
+  test('rejects a tag id that does not exist', async () => {
+    const { db } = makeDb(['tag-a']);
+    const res = await setupApp(db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Tag broadcast',
+        messageType: 'text',
+        messageContent: 'hello',
+        targetType: 'tag',
+        targetTagIds: ['tag-a', 'missing'],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createBroadcast).not.toHaveBeenCalled();
+  });
+
+  test('updates a draft and writes both the JSON list and legacy compatibility field', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: 'tag-a',
+      target_tag_ids: '["tag-a"]',
+      status: 'draft',
+    };
+    const updated = { ...existing, target_tag_id: null, target_tag_ids: '["tag-a","tag-b"]' };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.updateBroadcast.mockResolvedValue(updated);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetTagIds: ['tag-a', 'tag-b'] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateBroadcast).toHaveBeenCalledWith(db, 'broadcast-1', expect.objectContaining({
+      target_tag_id: null,
+      target_tag_ids: '["tag-a","tag-b"]',
+    }));
+  });
+
+  test('keeps the saved tag collection when updating another draft field', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_id: null,
+      target_tag_ids: '["tag-a","tag-b"]',
+      status: 'draft',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.updateBroadcast.mockResolvedValue({ ...existing, title: 'Renamed' });
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const updates = dbMocks.updateBroadcast.mock.calls[0][2];
+    expect(updates).not.toHaveProperty('target_tag_id');
+    expect(updates).not.toHaveProperty('target_tag_ids');
+    expect(await res.json()).toMatchObject({
+      data: { targetTagIds: ['tag-a', 'tag-b'] },
+    });
+  });
+
+  test('keeps multi-account-dedup on its legacy single tag field', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'multi-account-dedup',
+      target_tag_id: 'tag-a',
+      target_tag_ids: null,
+      status: 'draft',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.updateBroadcast.mockResolvedValue({ ...existing, target_tag_id: 'tag-b' });
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetTagId: 'tag-b' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateBroadcast).toHaveBeenCalledWith(db, 'broadcast-1', expect.objectContaining({
+      target_tag_id: 'tag-b',
+      target_tag_ids: null,
+    }));
+  });
+
+  test('uses the shared recipient resolver for preview counts', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_ids: '["tag-a","tag-b"]',
+      status: 'draft',
+      line_account_id: 'account-1',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.resolveTagBroadcastRecipients.mockResolvedValue([
+      { id: 'friend-a' },
+      { id: 'friend-b' },
+    ]);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1/preview-count');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, data: { count: 2 } });
+    expect(dbMocks.resolveTagBroadcastRecipients).toHaveBeenCalledWith(db, {
+      tagIds: ['tag-a', 'tag-b'],
+      lineAccountId: 'account-1',
+    });
+  });
+
+  test('queues more than 500 OR recipients with the fail-safe tag marker', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      target_type: 'tag',
+      target_tag_ids: '["tag-a","tag-b"]',
+      status: 'draft',
+      line_account_id: 'account-1',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.resolveTagBroadcastRecipients.mockResolvedValue(
+      Array.from({ length: 501 }, (_, index) => ({ id: `friend-${index}` })),
+    );
+    const { db, calls } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1/send', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(202);
+    expect(calls).toContainEqual(expect.objectContaining({
+      binds: ['{"kind":"tag_or_queued"}', 'broadcast-1'],
+    }));
+  });
 });
 
 afterEach(() => {

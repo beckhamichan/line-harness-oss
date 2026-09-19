@@ -87,6 +87,7 @@ const spec = {
           messageContent: { type: 'string' },
           targetType: { type: 'string', enum: ['all', 'tag', 'segment', 'multi-account-dedup'] },
           targetTagId: { type: 'string', nullable: true },
+          targetTagIds: { type: 'array', items: { type: 'string' } },
           accountIds: { type: 'array', items: { type: 'string' }, nullable: true },
           dedupPriority: { type: 'array', items: { type: 'string' }, nullable: true },
           failedAccountIds: { type: 'array', items: { type: 'string' }, nullable: true },
@@ -309,7 +310,7 @@ const spec = {
       post: {
         tags: ['Broadcasts'],
         summary: '配信作成',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, messageType: { type: 'string' }, messageContent: { type: 'string' }, targetType: { type: 'string' }, targetTagId: { type: 'string' }, accountIds: { type: 'array', items: { type: 'string' } }, dedupPriority: { type: 'array', items: { type: 'string' } }, scheduledAt: { type: 'string' } }, required: ['title', 'messageType', 'messageContent', 'targetType'] } } } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, messageType: { type: 'string' }, messageContent: { type: 'string' }, targetType: { type: 'string' }, targetTagId: { type: 'string' }, targetTagIds: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20, uniqueItems: true }, accountIds: { type: 'array', items: { type: 'string' } }, dedupPriority: { type: 'array', items: { type: 'string' } }, scheduledAt: { type: 'string' } }, required: ['title', 'messageType', 'messageContent', 'targetType'] } } } },
         responses: { '201': { description: 'Broadcast created' } },
       },
     },

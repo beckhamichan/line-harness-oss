@@ -202,7 +202,8 @@ CREATE TABLE "broadcasts" (
   account_ids        TEXT CHECK (account_ids IS NULL OR json_valid(account_ids)),
   dedup_priority     TEXT CHECK (dedup_priority IS NULL OR json_valid(dedup_priority)),
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids))
-, dedup_progress TEXT, batch_lock_at TEXT);
+, dedup_progress TEXT, batch_lock_at TEXT, target_tag_ids TEXT
+  CHECK (target_tag_ids IS NULL OR json_valid(target_tag_ids)));
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,

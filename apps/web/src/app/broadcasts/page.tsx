@@ -260,7 +260,11 @@ function BroadcastList() {
             <tbody className="divide-y divide-gray-100">
               {visibleBroadcasts.map((broadcast) => {
                 const statusInfo = statusConfig[broadcast.status]
-                const tagName = getTagName(broadcast.targetTagId)
+                const tagNames = (broadcast.targetTagIds?.length
+                  ? broadcast.targetTagIds
+                  : broadcast.targetTagId ? [broadcast.targetTagId] : [])
+                  .map((id) => getTagName(id) ?? id)
+                const tagName = tagNames.join('、')
                 const isDedup = broadcast.targetType === 'multi-account-dedup'
 
                 return (
@@ -298,7 +302,7 @@ function BroadcastList() {
                       ) : broadcast.targetType === 'all' ? (
                         '全員'
                       ) : tagName ? (
-                        <span>タグ: {tagName}</span>
+                        <span>タグ: {tagName}{(broadcast.targetTagIds?.length ?? 0) > 1 ? '（いずれか）' : ''}</span>
                       ) : (
                         'タグ指定'
                       )}
