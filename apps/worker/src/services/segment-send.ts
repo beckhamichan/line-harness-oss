@@ -11,6 +11,7 @@ import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js'
 import { buildSegmentQuery } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
 import { buildMessage } from './broadcast.js';
+import { assertDeliveryAllowed } from './delivery-window.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -25,6 +26,10 @@ export async function processSegmentSend(
   broadcastId: string,
   condition: SegmentCondition,
 ): Promise<Broadcast> {
+  // 送信時ガード（ISSUE-0080）: status を動かす前に判定する。
+  // この経路は現状どこからも呼ばれていないが、繋いだ瞬間に穴になるので塞いでおく。
+  assertDeliveryAllowed();
+
   // Mark as sending
   await updateBroadcastStatus(db, broadcastId, 'sending');
 
