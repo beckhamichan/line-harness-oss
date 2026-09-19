@@ -236,7 +236,15 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
             <div className="flex justify-between">
               <dt className="text-gray-500">対象</dt>
               <dd className="text-gray-900">
-                {broadcast.targetType === 'all' ? '全員' : `タグ: ${broadcast.targetTagId ?? '-'}`}
+                {broadcast.targetType === 'all'
+                  ? '全員'
+                  : `タグ: ${(
+                    (broadcast.targetTagIds?.length
+                      ? broadcast.targetTagIds
+                      : broadcast.targetTagId ? [broadcast.targetTagId] : [])
+                      .map((id) => tags.find((tag) => tag.id === id)?.name ?? id)
+                      .join('、') || '-'
+                  )}${broadcast.targetTagIds?.length > 1 ? '（いずれか）' : ''}`}
                 {targetCount != null && <span className="ml-1 text-gray-500">({targetCount.toLocaleString('ja-JP')}人)</span>}
               </dd>
             </div>

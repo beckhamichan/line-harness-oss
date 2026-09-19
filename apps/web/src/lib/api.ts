@@ -285,6 +285,7 @@ export const api = {
       messageContent: string
       targetType: ApiBroadcast['targetType']
       targetTagId?: string | null
+      targetTagIds?: string[]
       scheduledAt?: string | null
       status?: ApiBroadcast['status']
       lineAccountId?: string | null
@@ -303,6 +304,7 @@ export const api = {
         messageContent?: string
         targetType?: ApiBroadcast['targetType']
         targetTagId?: string | null
+        targetTagIds?: string[]
         scheduledAt?: string | null
       }
     ) =>

@@ -27,6 +27,7 @@ interface FormState {
   messageContent: string
   targetType: ApiBroadcast['targetType']
   targetTagId: string
+  targetTagIds: string[]
   scheduledAt: string
   sendNow: boolean
   accountIds: string[]
@@ -52,6 +53,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     messageContent: '',
     targetType: 'all',
     targetTagId: '',
+    targetTagIds: [],
     scheduledAt: '',
     sendNow: true,
     accountIds: [],
@@ -70,6 +72,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
       setError('予約配信の場合は配信日時を指定してください')
       return
     }
+    if (form.targetType === 'tag' && form.targetTagIds.length === 0) {
+      setError('タグを1つ以上選択してください')
+      return
+    }
     if (form.targetType === 'multi-account-dedup' && form.accountIds.length === 0) {
       setError('複数アカ重複除外: 配信先アカウントを 1 つ以上選択してください')
       return
@@ -83,13 +89,11 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         messageType: form.messageType,
         messageContent: form.messageContent,
         targetType: form.targetType,
-        // tag mode: required; multi-account-dedup mode: optional narrowing filter; else: null
         targetTagId:
-          form.targetType === 'tag'
-            ? form.targetTagId || null
-            : form.targetType === 'multi-account-dedup'
+          form.targetType === 'multi-account-dedup'
             ? form.targetTagId || null
             : null,
+        targetTagIds: form.targetType === 'tag' ? form.targetTagIds : undefined,
         status: 'draft',
         lineAccountId: form.targetType === 'multi-account-dedup' ? null : (selectedAccountId || null),
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
@@ -273,7 +277,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           <div className="flex flex-wrap gap-2 mb-2">
             <button
               type="button"
-              onClick={() => setForm({ ...form, targetType: 'all', targetTagId: '' })}
+              onClick={() => setForm({ ...form, targetType: 'all', targetTagId: '', targetTagIds: [] })}
               className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                 form.targetType === 'all'
                   ? 'border-green-500 text-green-700 bg-green-50'
@@ -295,7 +299,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             </button>
             <button
               type="button"
-              onClick={() => setForm({ ...form, targetType: 'multi-account-dedup', targetTagId: '' })}
+              onClick={() => setForm({ ...form, targetType: 'multi-account-dedup', targetTagId: '', targetTagIds: [] })}
               className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                 form.targetType === 'multi-account-dedup'
                   ? 'border-green-500 text-green-700 bg-green-50'
@@ -306,16 +310,42 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             </button>
           </div>
           {form.targetType === 'tag' && (
-            <select
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
-              value={form.targetTagId}
-              onChange={(e) => setForm({ ...form, targetTagId: e.target.value })}
-            >
-              <option value="">タグを選択...</option>
-              {tags.map((tag) => (
-                <option key={tag.id} value={tag.id}>{tag.name}</option>
-              ))}
-            </select>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>いずれかのタグに該当する友だちへ配信します</span>
+                <span>{form.targetTagIds.length} / 20 選択</span>
+              </div>
+              <div className="max-h-56 overflow-y-auto rounded-lg border border-gray-300 bg-white p-2">
+                {tags.length === 0 ? (
+                  <p className="px-2 py-3 text-sm text-gray-400">選択できるタグがありません</p>
+                ) : tags.map((tag) => {
+                  const checked = form.targetTagIds.includes(tag.id)
+                  const disabled = !checked && form.targetTagIds.length >= 20
+                  return (
+                    <label key={tag.id} className={`flex min-h-[44px] items-center gap-3 rounded-md px-2 text-sm ${disabled ? 'text-gray-300' : 'text-gray-700 hover:bg-gray-50'}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={() => setForm((prev) => ({
+                          ...prev,
+                          targetTagIds: checked
+                            ? prev.targetTagIds.filter((id) => id !== tag.id)
+                            : [...prev.targetTagIds, tag.id],
+                        }))}
+                        className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                      />
+                      <span>{tag.name}</span>
+                    </label>
+                  )
+                })}
+              </div>
+              {!selectedAccountId && (
+                <p className="text-xs text-amber-700">
+                  アカウントが未選択のため、選択タグに該当する全アカウントの友だちが対象になります。
+                </p>
+              )}
+            </div>
           )}
           {form.targetType === 'multi-account-dedup' && (
             <MultiAccountDedupSection
