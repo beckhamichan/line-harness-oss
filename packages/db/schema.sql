@@ -129,6 +129,17 @@ CREATE TABLE IF NOT EXISTS broadcasts (
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
 
+CREATE TABLE IF NOT EXISTS broadcast_messages (
+  id              TEXT PRIMARY KEY,
+  broadcast_id    TEXT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+  position        INTEGER NOT NULL CHECK (position BETWEEN 0 AND 4),
+  message_type    TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'flex')),
+  message_content TEXT NOT NULL,
+  alt_text        TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (broadcast_id, position)
+);
+
 -- ============================================================
 --- Account Settings
 --- ============================================================
@@ -179,6 +190,7 @@ CREATE TABLE IF NOT EXISTS messages_log (
   delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
   source           TEXT,
   line_account_id  TEXT,
+  message_index    INTEGER CHECK (message_index IS NULL OR message_index BETWEEN 0 AND 4),
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 

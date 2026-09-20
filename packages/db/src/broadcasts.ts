@@ -2,6 +2,23 @@ import { jstNow } from './utils.js';
 export type BroadcastTargetType = 'all' | 'tag' | 'multi-account-dedup';
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent';
 export type BroadcastMessageType = 'text' | 'image' | 'flex';
+export const MAX_BROADCAST_MESSAGES = 5;
+
+export interface BroadcastMessage {
+  id: string;
+  broadcast_id: string;
+  position: number;
+  message_type: BroadcastMessageType;
+  message_content: string;
+  alt_text: string | null;
+  created_at: string;
+}
+
+export interface BroadcastMessageInput {
+  messageType: BroadcastMessageType;
+  messageContent: string;
+  altText?: string | null;
+}
 
 export interface Broadcast {
   id: string;
@@ -189,6 +206,84 @@ export async function updateBroadcast(
 
 export async function deleteBroadcast(db: D1Database, id: string): Promise<void> {
   await db.prepare(`DELETE FROM broadcasts WHERE id = ?`).bind(id).run();
+}
+
+export async function getBroadcastMessages(
+  db: D1Database,
+  broadcastId: string,
+): Promise<BroadcastMessage[]> {
+  const result = await db
+    .prepare(
+      `SELECT id, broadcast_id, position, message_type, message_content, alt_text, created_at
+       FROM broadcast_messages
+       WHERE broadcast_id = ?
+       ORDER BY position ASC`,
+    )
+    .bind(broadcastId)
+    .all<BroadcastMessage>();
+  return result.results;
+}
+
+function validateBroadcastMessages(messages: BroadcastMessageInput[]): void {
+  if (messages.length < 1 || messages.length > MAX_BROADCAST_MESSAGES) {
+    throw new RangeError(`broadcast messages must contain 1-${MAX_BROADCAST_MESSAGES} items`);
+  }
+
+  for (const message of messages) {
+    if (!['text', 'image', 'flex'].includes(message.messageType)) {
+      throw new TypeError(`unsupported broadcast message type: ${String(message.messageType)}`);
+    }
+    if (!message.messageContent.trim()) {
+      throw new TypeError('broadcast message content must not be empty');
+    }
+  }
+}
+
+/**
+ * Replace all ordered messages for a broadcast in one D1 batch.
+ *
+ * The legacy parent columns mirror position 0 so existing API clients keep
+ * reading a valid one-message representation during the staged rollout.
+ */
+export async function replaceBroadcastMessages(
+  db: D1Database,
+  broadcastId: string,
+  messages: BroadcastMessageInput[],
+): Promise<BroadcastMessage[]> {
+  validateBroadcastMessages(messages);
+
+  const now = jstNow();
+  const first = messages[0];
+  const statements = [
+    db
+      .prepare(
+        `UPDATE broadcasts
+         SET message_type = ?, message_content = ?, alt_text = ?
+         WHERE id = ?`,
+      )
+      .bind(first.messageType, first.messageContent, first.altText ?? null, broadcastId),
+    db.prepare(`DELETE FROM broadcast_messages WHERE broadcast_id = ?`).bind(broadcastId),
+    ...messages.map((message, position) =>
+      db
+        .prepare(
+          `INSERT INTO broadcast_messages
+             (id, broadcast_id, position, message_type, message_content, alt_text, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          broadcastId,
+          position,
+          message.messageType,
+          message.messageContent,
+          message.altText ?? null,
+          now,
+        ),
+    ),
+  ];
+
+  await db.batch(statements);
+  return getBroadcastMessages(db, broadcastId);
 }
 
 export async function createBroadcastInsight(
