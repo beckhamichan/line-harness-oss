@@ -182,11 +182,15 @@ export async function computeDedupBroadcastPreview(
   return { totalSelected, uniqueRecipients, reduction, reductionRate, perAccount };
 }
 
-import { LineClient, type Message } from '@line-crm/line-sdk';
+import { LineClient } from '@line-crm/line-sdk';
 import { getLineAccountById, jstNow, updateBroadcastLineRequestId } from '@line-crm/db';
-import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
-import { renderMessageContent } from './render-message.js';
-import { buildMessage } from './broadcast.js';
+import { calculateStaggerDelay, sleep } from './stealth.js';
+import {
+  addBatchMessageVariations,
+  buildMessages,
+  createBroadcastMessageLogStatements,
+  type BroadcastMessageData,
+} from './broadcast.js';
 import { isDeliveryAllowed } from './delivery-window.js';
 
 /** 禁止帯に入ったため送信ループを中断する内部シグナル（失敗ではない）。 */
@@ -283,6 +287,7 @@ export async function processMultiAccountDedupBroadcast(
     message_type: string;
     message_content: string;
     alt_text?: string | null;
+    messages?: BroadcastMessageData[];
     dedup_progress?: string | null;
     aggregation_unit?: string | null;
   },
@@ -348,13 +353,20 @@ export async function processMultiAccountDedupBroadcast(
     const totalBatches = Math.ceil(remaining.length / MULTICAST_BATCH_SIZE);
 
     // Per-account の liff_id でテンプレ変数 ({{liff_id}}) を置換してから
-    // buildMessage する。これで 1 broadcast から複数アカへ配信する際、
+    // buildMessages する。これで 1 broadcast から複数アカへ配信する際、
     // 友だちの所属アカに対応した LIFF URL が届く (events の運用要件)。
-    const renderedContent = renderMessageContent(
-      broadcast.message_content,
+    const sourceMessages = broadcast.messages?.length
+      ? broadcast.messages
+      : [{
+          position: 0,
+          messageType: broadcast.message_type,
+          messageContent: broadcast.message_content,
+          altText: broadcast.alt_text ?? null,
+        }];
+    const messages = buildMessages(
+      sourceMessages,
       (account as unknown as { liff_id?: string | null }).liff_id ?? null,
     );
-    const message = buildMessage(broadcast.message_type, renderedContent, broadcast.alt_text ?? undefined);
 
     try {
       for (let i = 0; i < remaining.length; i += MULTICAST_BATCH_SIZE) {
@@ -373,12 +385,9 @@ export async function processMultiAccountDedupBroadcast(
           throw new DeliveryWindowPause();
         }
 
-        let batchMessage = message;
-        if (message.type === 'text' && totalBatches > 1) {
-          batchMessage = { ...message, text: addMessageVariation(message.text, batchIdx) } as Message;
-        }
+        const batchMessages = addBatchMessageVariations(messages, batchIdx, totalBatches);
 
-        await client.multicast(batch.map((r) => r.lineUserId), [batchMessage], [unit]);
+        await client.multicast(batch.map((r) => r.lineUserId), batchMessages, [unit]);
 
         // multicast 成功直後に identKey を sent set へ追加。
         for (const r of batch) {
@@ -392,12 +401,15 @@ export async function processMultiAccountDedupBroadcast(
         // DB 進捗未更新」になって resume 時に同 batch を再送 → 重複配信事故が起きる。
         // db.batch は D1 で transaction として扱われ、まとめて成否が決まる。
         const stmts = [
-          ...batch.map((r) =>
-            db.prepare(
-              `INSERT INTO messages_log
-                (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
-            ).bind(crypto.randomUUID(), r.friendId, broadcast.message_type, broadcast.message_content, broadcast.id, account.id, now),
+          ...createBroadcastMessageLogStatements(
+            db,
+            batch.map((recipient) => ({ id: recipient.friendId })),
+            batchMessages,
+            {
+              broadcastId: broadcast.id,
+              lineAccountId: account.id,
+              createdAt: now,
+            },
           ),
           // success_count は absolute (`= ?`) で書いて double-counting を防ぐ。
           db.prepare(

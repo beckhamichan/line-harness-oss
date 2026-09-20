@@ -14,6 +14,8 @@ const dbMocks = {
   getQueuedBroadcasts: vi.fn(),
   updateBroadcastStatus: vi.fn(),
   updateBroadcastBatchProgress: vi.fn(),
+  getBroadcastMessages: vi.fn(),
+  replaceBroadcastMessages: vi.fn(),
   getBroadcastTargetTagIds: vi.fn(() => ['tag-a']),
   resolveTagBroadcastRecipients: vi.fn(),
   getLineAccountById: vi.fn(),
@@ -89,6 +91,7 @@ function makeDb() {
 beforeEach(() => {
   vi.clearAllMocks();
   dbMocks.getBroadcastById.mockResolvedValue(makeBroadcast());
+  dbMocks.getBroadcastMessages.mockResolvedValue([]);
   dbMocks.getBroadcastTargetTagIds.mockReturnValue(['tag-a']);
   dbMocks.resolveTagBroadcastRecipients.mockResolvedValue([
     { id: 'f1', line_user_id: 'U1', is_following: 1 },

@@ -7,10 +7,16 @@ import {
 } from '@line-crm/db';
 import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
-import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import { calculateStaggerDelay, sleep } from './stealth.js';
 import { buildSegmentQuery } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
-import { buildMessage } from './broadcast.js';
+import {
+  addBatchMessageVariations,
+  autoTrackBroadcastMessages,
+  buildMessages,
+  createBroadcastMessageLogStatements,
+  getEffectiveBroadcastMessages,
+} from './broadcast.js';
 import { assertDeliveryAllowed } from './delivery-window.js';
 
 const MULTICAST_BATCH_SIZE = 500;
@@ -25,6 +31,7 @@ export async function processSegmentSend(
   lineClient: LineClient,
   broadcastId: string,
   condition: SegmentCondition,
+  workerUrl?: string,
 ): Promise<Broadcast> {
   // 送信時ガード（ISSUE-0080）: status を動かす前に判定する。
   // この経路は現状どこからも呼ばれていないが、繋いだ瞬間に穴になるので塞いでおく。
@@ -38,7 +45,16 @@ export async function processSegmentSend(
     throw new Error(`Broadcast ${broadcastId} not found`);
   }
 
-  const message = buildMessage(broadcast.message_type, broadcast.message_content);
+  const sourceMessages = await getEffectiveBroadcastMessages(db, broadcast);
+  const trackedMessages = await autoTrackBroadcastMessages(db, sourceMessages, workerUrl);
+  const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+  let liffId: string | null = null;
+  if (broadcastAccountId) {
+    const { getLineAccountById } = await import('@line-crm/db');
+    const account = await getLineAccountById(db, broadcastAccountId);
+    liffId = (account as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
+  }
+  const messages = buildMessages(trackedMessages, liffId);
 
   let totalCount = 0;
   let successCount = 0;
@@ -46,7 +62,6 @@ export async function processSegmentSend(
   try {
     // Build and execute segment query to get matching friends (アカウントで絞り込み)
     const { sql, bindings } = buildSegmentQuery(condition);
-    const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
     let finalSql = sql;
     const finalBindings = [...bindings];
     if (broadcastAccountId) {
@@ -76,25 +91,20 @@ export async function processSegmentSend(
         await sleep(delay);
       }
 
-      // Stealth: add slight variation to text messages
-      let batchMessage = message;
-      if (message.type === 'text' && totalBatches > 1) {
-        batchMessage = { ...message, text: addMessageVariation(message.text, batchIndex) };
-      }
+      const batchMessages = addBatchMessageVariations(messages, batchIndex, totalBatches);
 
       try {
-        await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
+        await lineClient.multicast(lineUserIds, batchMessages, [unit]);
         successCount += batch.length;
 
         // Log successfully sent messages (batch insert for performance)
         // line_account_id は broadcast 設定時の固定値を記録 (送信時点のチャネル).
         const segmentBroadcastAccount = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
-        const logStmts = batch.map(friend =>
-          db.prepare(
-            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-             VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
-          ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, broadcast.message_content, broadcastId, segmentBroadcastAccount, now),
-        );
+        const logStmts = createBroadcastMessageLogStatements(db, batch, batchMessages, {
+          broadcastId,
+          lineAccountId: segmentBroadcastAccount,
+          createdAt: now,
+        });
         await db.batch(logStmts);
       } catch (err) {
         console.error(`Segment multicast batch ${batchIndex} failed:`, err);
@@ -114,4 +124,4 @@ export async function processSegmentSend(
   return (await getBroadcastById(db, broadcastId))!;
 }
 
-// buildMessage is imported from ./broadcast.js (single source of truth)
+// Message building is imported from ./broadcast.js (single source of truth).

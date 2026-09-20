@@ -20,16 +20,21 @@ vi.mock('@line-crm/db', () => dbMocks);
 const lineClientMocks = {
   getMessageEventInsight: vi.fn(),
   getUnitInsight: vi.fn(),
+  pushMessage: vi.fn(),
 };
 vi.mock('@line-crm/line-sdk', () => ({
   LineClient: vi.fn().mockImplementation(() => lineClientMocks),
 }));
 
-vi.mock('../services/broadcast.js', () => ({
+const broadcastServiceMocks = {
   processBroadcastSend: vi.fn(),
-  buildMessage: vi.fn(),
   processQueuedBroadcasts: vi.fn(),
-}));
+  getEffectiveBroadcastMessages: vi.fn(),
+  autoTrackBroadcastMessages: vi.fn(),
+  buildMessages: vi.fn(),
+  createBroadcastMessageLogStatements: vi.fn(),
+};
+vi.mock('../services/broadcast.js', () => broadcastServiceMocks);
 vi.mock('../services/dedup-broadcast.js', () => ({
   computeDedupBroadcastPreview: vi.fn(),
 }));
@@ -43,6 +48,7 @@ type TestEnv = {
   Bindings: {
     DB: D1Database;
     LINE_CHANNEL_ACCESS_TOKEN: string;
+    WORKER_URL: string;
   };
 };
 
@@ -120,7 +126,7 @@ function makeDb(existingTagIds?: string[]) {
 function setupApp(db: D1Database) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
-    c.env = { DB: db, LINE_CHANNEL_ACCESS_TOKEN: 'default-token' };
+    c.env = { DB: db, LINE_CHANNEL_ACCESS_TOKEN: 'default-token', WORKER_URL: 'https://worker.example' };
     await next();
   });
   app.route('/', broadcasts);
@@ -140,6 +146,8 @@ beforeEach(() => {
   });
   lineClientMocks.getMessageEventInsight.mockReset();
   lineClientMocks.getUnitInsight.mockReset();
+  lineClientMocks.pushMessage.mockReset();
+  for (const fn of Object.values(broadcastServiceMocks)) fn.mockReset();
 });
 
 describe('standard tag broadcast targeting', () => {
@@ -437,6 +445,74 @@ describe('standard tag broadcast targeting', () => {
     expect(calls).toContainEqual(expect.objectContaining({
       binds: ['{"kind":"tag_or_queued"}', 'broadcast-1'],
     }));
+  });
+});
+
+describe('broadcast test-send', () => {
+  test('sends every saved message in one push request and logs each message', async () => {
+    const broadcast = {
+      ...makeBroadcast(null),
+      status: 'draft',
+      line_account_id: 'account-1',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(broadcast);
+    dbMocks.getLineAccountById.mockResolvedValue({
+      id: 'account-1',
+      channel_access_token: 'test-token',
+      liff_id: 'liff-1',
+    });
+
+    const sourceMessages = [
+      { position: 0, messageType: 'text', messageContent: 'first', altText: null },
+      { position: 1, messageType: 'image', messageContent: '{}', altText: null },
+    ];
+    const builtMessages = [
+      { type: 'text', text: '【テスト配信】\nfirst' },
+      { type: 'image', originalContentUrl: 'https://example.test/a.jpg', previewImageUrl: 'https://example.test/a.jpg' },
+    ];
+    broadcastServiceMocks.getEffectiveBroadcastMessages.mockResolvedValue(sourceMessages);
+    broadcastServiceMocks.autoTrackBroadcastMessages.mockImplementation(async (_db, messages) => messages);
+    broadcastServiceMocks.buildMessages.mockReturnValue(builtMessages);
+
+    const logStatements = [{ kind: 'log-0' }, { kind: 'log-1' }] as unknown as D1PreparedStatement[];
+    broadcastServiceMocks.createBroadcastMessageLogStatements.mockReturnValue(logStatements);
+
+    const batch = vi.fn(async () => []);
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          bind: (..._args: unknown[]) => stmt,
+          async first<T>() {
+            if (sql.includes('account_settings')) return { value: '["friend-1"]' } as T;
+            return null as T;
+          },
+          async all<T>() {
+            if (sql.includes('FROM friends')) {
+              return { results: [{ id: 'friend-1', line_user_id: 'U-test' }] as T[] };
+            }
+            return { results: [] as T[] };
+          },
+        };
+        return stmt;
+      },
+      batch,
+    } as unknown as D1Database;
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1/test-send', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    expect(lineClientMocks.pushMessage).toHaveBeenCalledWith('U-test', builtMessages);
+    expect(broadcastServiceMocks.getEffectiveBroadcastMessages).toHaveBeenCalledWith(db, broadcast);
+    expect(broadcastServiceMocks.buildMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ messageContent: '【テスト配信】\nfirst' }),
+      ]),
+      'liff-1',
+    );
+    expect(batch).toHaveBeenCalledWith(logStatements);
+    expect(await res.json()).toEqual({ success: true, sent: 1, failed: 0 });
   });
 });
 
