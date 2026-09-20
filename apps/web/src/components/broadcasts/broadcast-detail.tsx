@@ -5,11 +5,11 @@ import { useRouter } from 'next/navigation'
 import { api, getApiErrorReason, type ApiBroadcast, type BroadcastInsight } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
-import FlexPreviewComponent from '@/components/flex-preview'
 import TestSendSection from '@/components/broadcasts/test-send-section'
 import ProgressBar from '@/components/broadcasts/progress-bar'
 import SendConfirmDialog from '@/components/broadcasts/send-confirm-dialog'
 import SegmentBuilder from '@/components/broadcasts/segment-builder'
+import BroadcastMessagePreview from '@/components/broadcasts/broadcast-message-preview'
 import type { Tag } from '@line-crm/shared'
 
 interface BroadcastDetailProps {
@@ -187,6 +187,9 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
 
   const raw = broadcast as unknown as Record<string, unknown>
   const accountId = raw.lineAccountId as string | null
+  const messages = broadcast.messages?.length > 0
+    ? broadcast.messages
+    : [{ type: broadcast.messageType, content: broadcast.messageContent, altText: broadcast.altText ?? null }]
 
   return (
     <div>
@@ -209,21 +212,21 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         {/* Left: Preview */}
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">メッセージプレビュー</h3>
-          {broadcast.messageType === 'flex' ? (
-            <FlexPreviewComponent content={broadcast.messageContent} maxWidth={300} />
-          ) : broadcast.messageType === 'image' ? (
-            (() => {
-              try {
-                const img = JSON.parse(broadcast.messageContent)
-                return <img src={img.originalContentUrl} alt="" className="max-w-[300px] rounded-lg" />
-              } catch { return <p className="text-gray-400 text-sm">画像プレビュー不可</p> }
-            })()
-          ) : (
-            <div className="bg-green-500 text-white rounded-2xl rounded-tl-sm px-4 py-3 max-w-[300px] text-sm whitespace-pre-wrap">
-              {broadcast.messageContent}
-            </div>
-          )}
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-gray-700">メッセージプレビュー</h3>
+            <span className="text-xs text-gray-500">{messages.length}件</span>
+          </div>
+          <div className="space-y-4">
+            {messages.map((message, index) => (
+              <div key={`${index}-${message.type}`} className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                <p className="mb-2 text-xs font-medium text-gray-500">メッセージ {index + 1}</p>
+                <BroadcastMessagePreview message={message} />
+                {message.type === 'flex' && message.altText && (
+                  <p className="mt-2 text-xs text-gray-500">代替テキスト: {message.altText}</p>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Right: Settings */}
@@ -232,7 +235,11 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-gray-500">種別</dt>
-              <dd className="text-gray-900">{broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}</dd>
+              <dd className="text-right text-gray-900">
+                {messages.map((message) => (
+                  message.type === 'text' ? 'テキスト' : message.type === 'image' ? '画像' : 'Flex'
+                )).join(' → ')}
+              </dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-500">対象</dt>

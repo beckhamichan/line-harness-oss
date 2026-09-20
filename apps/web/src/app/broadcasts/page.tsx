@@ -283,7 +283,9 @@ function BroadcastList() {
                           )}
                         </div>
                         <p className="text-xs text-gray-400 mt-0.5">
-                          {broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}
+                          {(broadcast.messages?.length ?? 1) > 1
+                            ? `${broadcast.messages.length}件のメッセージ`
+                            : broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}
                         </p>
                       </div>
                     </td>

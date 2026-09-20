@@ -2,11 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import type { Tag } from '@line-crm/shared'
-import { api, eventsApi, getApiErrorReason, type ApiBroadcast, type EventListItem } from '@/lib/api'
+import { api, eventsApi, getApiErrorReason, type EventListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
-import FlexPreviewComponent from '@/components/flex-preview'
-import TapImageBuilder from '@/components/scenarios/tap-image-builder'
-import ImageUploader from '@/components/shared/image-uploader'
+import BroadcastMessageEditor from './broadcast-message-editor'
+import {
+  createBroadcastMessageDraft,
+  toApiBroadcastMessages,
+  validateBroadcastMessageDrafts,
+  type BroadcastMessageDraft,
+} from './broadcast-message-utils'
 import MultiAccountDedupSection from './multi-account-dedup-section'
 
 interface BroadcastFormProps {
@@ -15,17 +19,10 @@ interface BroadcastFormProps {
   onCancel: () => void
 }
 
-const messageTypeLabels: Record<ApiBroadcast['messageType'], string> = {
-  text: 'テキスト',
-  image: '画像',
-  flex: 'Flexメッセージ',
-}
-
 interface FormState {
   title: string
-  messageType: ApiBroadcast['messageType']
-  messageContent: string
-  targetType: ApiBroadcast['targetType']
+  messages: BroadcastMessageDraft[]
+  targetType: 'all' | 'tag' | 'segment' | 'multi-account-dedup'
   targetTagId: string
   targetTagIds: string[]
   scheduledAt: string
@@ -36,21 +33,23 @@ interface FormState {
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
   const { selectedAccountId } = useAccount()
-  // 「リンクするイベント」セレクタ用: 公開中の events を取得して
-  // 選択された event の LIFF URL (テンプレ) を message に挿入する。
   const [linkableEvents, setLinkableEvents] = useState<EventListItem[]>([])
+  const [nextMessageId, setNextMessageId] = useState(2)
+
   useEffect(() => {
     if (!selectedAccountId) return
     let cancelled = false
     eventsApi.listEvents(selectedAccountId)
-      .then((r) => { if (!cancelled) setLinkableEvents(r.items.filter((e) => e.is_published === 1)) })
+      .then((result) => {
+        if (!cancelled) setLinkableEvents(result.items.filter((event) => event.is_published === 1))
+      })
       .catch(() => { /* silent */ })
     return () => { cancelled = true }
   }, [selectedAccountId])
+
   const [form, setForm] = useState<FormState>({
     title: '',
-    messageType: 'text',
-    messageContent: '',
+    messages: [createBroadcastMessageDraft(1)],
     targetType: 'all',
     targetTagId: '',
     targetTagIds: [],
@@ -64,10 +63,8 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError('配信タイトルを入力してください'); return }
-    if (!form.messageContent.trim()) { setError('メッセージ内容を入力してください'); return }
-    if (form.messageType === 'flex') {
-      try { JSON.parse(form.messageContent) } catch { setError('FlexメッセージのJSONが無効です'); return }
-    }
+    const messageError = validateBroadcastMessageDrafts(form.messages)
+    if (messageError) { setError(messageError); return }
     if (!form.sendNow && !form.scheduledAt) {
       setError('予約配信の場合は配信日時を指定してください')
       return
@@ -84,33 +81,27 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     setSaving(true)
     setError('')
     try {
-      const res = await api.broadcasts.create({
+      const result = await api.broadcasts.create({
         title: form.title,
-        messageType: form.messageType,
-        messageContent: form.messageContent,
+        messages: toApiBroadcastMessages(form.messages),
         targetType: form.targetType,
-        targetTagId:
-          form.targetType === 'multi-account-dedup'
-            ? form.targetTagId || null
-            : null,
+        targetTagId: form.targetType === 'multi-account-dedup' ? form.targetTagId || null : null,
         targetTagIds: form.targetType === 'tag' ? form.targetTagIds : undefined,
         status: 'draft',
         lineAccountId: form.targetType === 'multi-account-dedup' ? null : (selectedAccountId || null),
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
         dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
-        // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time
-        // Append +09:00 so new Date() parses correctly for epoch comparisons
+        // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time.
         scheduledAt: form.sendNow || !form.scheduledAt
           ? null
           : form.scheduledAt + ':00.000+09:00',
       })
-      if (res.success) {
+      if (result.success) {
         onSuccess()
       } else {
-        setError(res.error)
+        setError(result.error)
       }
     } catch (err) {
-      // fetchApi はサーバーの理由（例: 配信禁止時間帯）を Error.message に載せる
       setError(getApiErrorReason(err) ?? '作成に失敗しました')
     } finally {
       setSaving(false)
@@ -118,171 +109,41 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-      <h2 className="text-sm font-semibold text-gray-800 mb-5">新規配信を作成</h2>
+    <div className="mb-6 rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+      <h2 className="mb-5 text-sm font-semibold text-gray-800">新規配信を作成</h2>
 
-      <div className="space-y-4 max-w-lg">
-        {/* Title */}
+      <div className="max-w-2xl space-y-5">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">
+          <label className="mb-1 block text-xs font-medium text-gray-600">
             配信タイトル <span className="text-red-500">*</span>
           </label>
           <input
             type="text"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
             placeholder="例: 3月のキャンペーン告知"
             value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            onChange={(event) => setForm({ ...form, title: event.target.value })}
           />
         </div>
 
-        {/* Message type */}
+        <BroadcastMessageEditor
+          messages={form.messages}
+          linkableEvents={linkableEvents}
+          nextMessageId={nextMessageId}
+          onNextMessageIdChange={setNextMessageId}
+          onChange={(messages) => setForm((current) => ({ ...current, messages }))}
+        />
+
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-2">メッセージ種別</label>
-          <div className="flex gap-2">
-            {(Object.keys(messageTypeLabels) as ApiBroadcast['messageType'][]).map((type) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setForm({ ...form, messageType: type })}
-                className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
-                  form.messageType === type
-                    ? 'border-green-500 text-green-700 bg-green-50'
-                    : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
-                }`}
-              >
-                {messageTypeLabels[type]}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Message content */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">
-            {form.messageType === 'flex' ? (
-              <>
-                Flex JSON（自動生成・直接編集も可） <span className="text-red-500">*</span>
-              </>
-            ) : (
-              <>
-                メッセージ内容 <span className="text-red-500">*</span>
-                {form.messageType === 'image' && (
-                  <span className="ml-1 text-gray-400">(JSON形式)</span>
-                )}
-              </>
-            )}
-          </label>
-
-          {/* Image helper: ImageUploader that auto-generates the required LINE image JSON */}
-          {form.messageType === 'image' && (
-            <div className="mb-2">
-              <ImageUploader
-                mode="line-image"
-                value={(() => {
-                  try {
-                    const parsed = JSON.parse(form.messageContent) as { originalContentUrl?: string; previewImageUrl?: string }
-                    if (parsed.originalContentUrl) {
-                      return { mode: 'line-image' as const, originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl ?? parsed.originalContentUrl }
-                    }
-                  } catch { /* ignore */ }
-                  return null
-                })()}
-                onChange={(v) => {
-                  if (v?.mode === 'line-image') {
-                    setForm((prev) => ({ ...prev, messageContent: JSON.stringify({ originalContentUrl: v.originalContentUrl, previewImageUrl: v.previewImageUrl }) }))
-                  } else {
-                    setForm((prev) => ({ ...prev, messageContent: '' }))
-                  }
-                }}
-                label="送信する画像"
-              />
-            </div>
-          )}
-
-          {/* リンクするイベント: 選択で {{liff_id}} 入りテンプレ URL を本文末尾に挿入 */}
-          {linkableEvents.length > 0 && form.messageType === 'text' && (
-            <div className="mb-2">
-              <label className="block text-xs font-medium text-gray-600 mb-1">
-                リンクするイベント（任意）
-              </label>
-              <select
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value
-                  if (!id) return
-                  const url = `https://liff.line.me/{{liff_id}}/?page=event&id=${id}`
-                  setForm((prev) => ({
-                    ...prev,
-                    messageContent: prev.messageContent
-                      ? `${prev.messageContent}\n${url}`
-                      : url,
-                  }))
-                  e.target.value = ''
-                }}
-                className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm w-full"
-              >
-                <option value="">— 選択しない —</option>
-                {linkableEvents.map((ev) => (
-                  <option key={ev.id} value={ev.id}>
-                    {ev.name} ({ev.target_type === 'multi-account-dedup' ? 'multi' : 'single'})
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                選ぶと本文末尾にテンプレ URL を挿入。{'{{liff_id}}'} は配信時に各友だちのアカに対応した値に自動置換されます。
-              </p>
-            </div>
-          )}
-          {form.messageType === 'flex' && (
-            <div className="mb-2">
-              <TapImageBuilder
-                title="画像リンクメッセージを作成"
-                description="画像URLを入れて、画像の上をドラッグするとタップ領域を作成できます。作成した内容はFlex JSONとして下の入力欄に反映されます。"
-                defaultOpen
-                hasExistingContent={form.messageContent.trim() !== ''}
-                onGenerate={(json) => setForm((prev) => ({ ...prev, messageContent: json }))}
-              />
-            </div>
-          )}
-          <textarea
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-            rows={form.messageType === 'flex' ? 8 : form.messageType === 'image' ? 3 : 4}
-            placeholder={
-              form.messageType === 'text'
-                ? '配信するメッセージを入力...'
-                : form.messageType === 'image'
-                ? '{"originalContentUrl":"...","previewImageUrl":"..."}'
-                : '{"type":"bubble","body":{...}}'
-            }
-            value={form.messageContent}
-            onChange={(e) => setForm({ ...form, messageContent: e.target.value })}
-            style={{ fontFamily: form.messageType !== 'text' ? 'monospace' : 'inherit' }}
-          />
-          {form.messageType === 'image' && (
-            <p className="text-xs text-gray-400 mt-1">上のURLフォームか、直接JSONを編集できます</p>
-          )}
-          {form.messageType === 'flex' && form.messageContent && (() => {
-            try { JSON.parse(form.messageContent); return true } catch { return false }
-          })() && (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-gray-500 mb-2">プレビュー</p>
-              <FlexPreviewComponent content={form.messageContent} maxWidth={300} />
-            </div>
-          )}
-        </div>
-
-        {/* Target */}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-2">配信対象</label>
-          <div className="flex flex-wrap gap-2 mb-2">
+          <label className="mb-2 block text-xs font-medium text-gray-600">配信対象</label>
+          <div className="mb-2 flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => setForm({ ...form, targetType: 'all', targetTagId: '', targetTagIds: [] })}
-              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+              className={`min-h-[44px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                 form.targetType === 'all'
-                  ? 'border-green-500 text-green-700 bg-green-50'
-                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
               }`}
             >
               全員
@@ -290,10 +151,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             <button
               type="button"
               onClick={() => setForm({ ...form, targetType: 'tag' })}
-              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+              className={`min-h-[44px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                 form.targetType === 'tag'
-                  ? 'border-green-500 text-green-700 bg-green-50'
-                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
               }`}
             >
               タグで絞り込み
@@ -301,15 +162,16 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             <button
               type="button"
               onClick={() => setForm({ ...form, targetType: 'multi-account-dedup', targetTagId: '', targetTagIds: [] })}
-              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+              className={`min-h-[44px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                 form.targetType === 'multi-account-dedup'
-                  ? 'border-green-500 text-green-700 bg-green-50'
-                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
               }`}
             >
               複数アカ重複除外
             </button>
           </div>
+
           {form.targetType === 'tag' && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-gray-500">
@@ -328,11 +190,11 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                         type="checkbox"
                         checked={checked}
                         disabled={disabled}
-                        onChange={() => setForm((prev) => ({
-                          ...prev,
+                        onChange={() => setForm((current) => ({
+                          ...current,
                           targetTagIds: checked
-                            ? prev.targetTagIds.filter((id) => id !== tag.id)
-                            : [...prev.targetTagIds, tag.id],
+                            ? current.targetTagIds.filter((id) => id !== tag.id)
+                            : [...current.targetTagIds, tag.id],
                         }))}
                         className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
                       />
@@ -348,30 +210,30 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
               )}
             </div>
           )}
+
           {form.targetType === 'multi-account-dedup' && (
             <MultiAccountDedupSection
               accountIds={form.accountIds}
               dedupPriority={form.dedupPriority}
               targetTagId={form.targetTagId || null}
               tags={tags}
-              onAccountIdsChange={(ids) => setForm({ ...form, accountIds: ids })}
-              onDedupPriorityChange={(ids) => setForm({ ...form, dedupPriority: ids })}
-              onTargetTagIdChange={(id) => setForm({ ...form, targetTagId: id ?? '' })}
+              onAccountIdsChange={(accountIds) => setForm({ ...form, accountIds })}
+              onDedupPriorityChange={(dedupPriority) => setForm({ ...form, dedupPriority })}
+              onTargetTagIdChange={(targetTagId) => setForm({ ...form, targetTagId: targetTagId ?? '' })}
             />
           )}
         </div>
 
-        {/* Schedule */}
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-2">配信タイミング</label>
-          <div className="flex flex-wrap gap-2 mb-2">
+          <label className="mb-2 block text-xs font-medium text-gray-600">配信タイミング</label>
+          <div className="mb-2 flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => setForm({ ...form, sendNow: true, scheduledAt: '' })}
-              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+              className={`min-h-[44px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                 form.sendNow
-                  ? 'border-green-500 text-green-700 bg-green-50'
-                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
               }`}
             >
               下書きとして保存
@@ -379,10 +241,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             <button
               type="button"
               onClick={() => setForm({ ...form, sendNow: false })}
-              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+              className={`min-h-[44px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                 !form.sendNow
-                  ? 'border-green-500 text-green-700 bg-green-50'
-                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
               }`}
             >
               予約配信
@@ -391,22 +253,20 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           {!form.sendNow && (
             <input
               type="datetime-local"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
               value={form.scheduledAt}
-              onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })}
+              onChange={(event) => setForm({ ...form, scheduledAt: event.target.value })}
             />
           )}
         </div>
 
-        {/* Error */}
         {error && <p className="text-xs text-red-600">{error}</p>}
 
-        {/* Actions */}
         <div className="flex gap-2 pt-1">
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
+            className="min-h-[44px] rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
             style={{ backgroundColor: '#06C755' }}
           >
             {saving ? '作成中...' : '作成'}
@@ -414,7 +274,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           <button
             onClick={onCancel}
             disabled={saving}
-            className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+            className="min-h-[44px] rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200"
           >
             キャンセル
           </button>
