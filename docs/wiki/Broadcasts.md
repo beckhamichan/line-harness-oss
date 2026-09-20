@@ -473,7 +473,7 @@ JST 23:00〜翌7:00は一斉配信を行いません。
 
 ## SDK 使用例
 
-> 現在のSDK/MCPは旧形式の単一メッセージ作成・更新のみ対応しています。複数メッセージは管理画面またはHTTP APIの `messages` を使用してください。SDK/MCPの複数メッセージ対応はIssue #56で扱います。
+SDKとMCPの配信管理ツールは、順序つき1〜5件の `messages` と旧形式の単一メッセージの両方に対応しています。`messages` と `messageType` / `messageContent` / `altText` は同時指定できません。
 
 ```typescript
 import { LineHarness } from '@line-harness/sdk'
@@ -485,11 +485,20 @@ const client = new LineHarness({
 
 // === 低レベルAPI ===
 
-// 配信作成（下書き）
+// 複数メッセージの配信作成（下書き）
 const broadcast = await client.broadcasts.create({
   title: '月間セール',
-  messageType: 'text',
-  messageContent: '今月のセール情報です！',
+  messages: [
+    { type: 'text', content: '今月のセール情報です！' },
+    {
+      type: 'image',
+      content: JSON.stringify({
+        originalContentUrl: 'https://example.com/sale.jpg',
+        previewImageUrl: 'https://example.com/sale-preview.jpg',
+      }),
+    },
+    { type: 'flex', content: JSON.stringify(flexMessageJson), altText: 'セールの詳細' },
+  ],
   targetType: 'all',
 })
 
@@ -502,9 +511,12 @@ const scheduled = await client.broadcasts.create({
   scheduledAt: '2026-03-24T08:00:00.000+09:00',
 })
 
-// 配信更新
+// 複数メッセージの更新は、変更後の配列全体を送る
 await client.broadcasts.update(broadcast.id, {
-  messageContent: '更新：今月のセール情報です！',
+  messages: [
+    { type: 'text', content: '更新：今月のセール情報です！' },
+    { type: 'flex', content: JSON.stringify(flexMessageJson), altText: '更新後の詳細' },
+  ],
 })
 
 // 即時配信

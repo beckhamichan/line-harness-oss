@@ -24,6 +24,7 @@ export type {
   ScenarioTriggerType,
   MessageType,
   BroadcastStatus,
+  BroadcastMessageInput,
   Friend,
   FriendListParams,
   Tag,

@@ -1,6 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getClient } from "../client.js";
+import {
+  broadcastMessagesSchema,
+  buildCreateDraftInput,
+  buildUpdateInput,
+} from "./broadcast-input.js";
 
 export function registerManageBroadcasts(server: McpServer): void {
   server.tool(
@@ -12,21 +17,23 @@ export function registerManageBroadcasts(server: McpServer): void {
         .describe("Action to perform"),
       broadcastId: z.string().optional().describe("Broadcast ID (required for get, update, send, send_to_segment)"),
       title: z.string().optional().describe("Broadcast title (for create_draft, update)"),
-      messageType: z.enum(["text", "image", "flex"]).optional().describe("Message type (for create_draft, update)"),
-      messageContent: z.string().optional().describe("Message content (for create_draft, update)"),
+      messages: broadcastMessagesSchema.optional().describe("Ordered list of 1-5 messages (for create_draft, update)"),
+      messageType: z.enum(["text", "image", "flex"]).optional().describe("Legacy single message type (for create_draft, update)"),
+      messageContent: z.string().optional().describe("Legacy single message content (for create_draft, update)"),
+      altText: z.string().nullable().optional().describe("Legacy single Flex alt text (for create_draft, update)"),
       targetType: z.enum(["all", "tag"]).optional().describe("Target type (for create_draft, update)"),
       targetTagId: z.string().nullable().optional().describe("Target tag ID (for create_draft, update)"),
       scheduledAt: z.string().nullable().optional().describe("ISO 8601 datetime to schedule (for create_draft, update)"),
       segmentConditions: z.string().optional().describe("JSON string of segment conditions: {operator: 'AND'|'OR', rules: [{type, value}]} (for send_to_segment)"),
       accountId: z.string().optional().describe("LINE account ID (uses default if omitted)"),
     },
-    async ({ action, broadcastId, title, messageType, messageContent, targetType, targetTagId, scheduledAt, segmentConditions, accountId }) => {
+    async ({ action, broadcastId, title, messages, messageType, messageContent, altText, targetType, targetTagId, scheduledAt, segmentConditions, accountId }) => {
       try {
         const client = getClient();
 
         if (action === "list") {
           const broadcasts = await client.broadcasts.list(accountId ? { accountId } : undefined);
-          const enriched = (broadcasts as Array<Record<string, unknown>>).map((b) => ({
+          const enriched = (broadcasts as unknown as Array<Record<string, unknown>>).map((b) => ({
             ...b,
             insightStatus: b.insight_status || null,
             openRate: b.open_rate != null
@@ -40,13 +47,17 @@ export function registerManageBroadcasts(server: McpServer): void {
         }
 
         if (action === "create_draft") {
-          if (!title || !messageType || !messageContent) {
-            throw new Error("title, messageType, messageContent are required for create_draft");
-          }
-          const input: Record<string, unknown> = { title, messageType, messageContent, targetType: targetType ?? "all" };
-          if (targetTagId) input.targetTagId = targetTagId;
-          if (scheduledAt) input.scheduledAt = scheduledAt;
-          if (accountId) input.lineAccountId = accountId;
+          const input = buildCreateDraftInput({
+            title,
+            messages,
+            messageType,
+            messageContent,
+            altText,
+            targetType,
+            targetTagId,
+            scheduledAt,
+            accountId,
+          });
           const broadcast = await client.broadcasts.create(input as never);
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, broadcast }, null, 2) }] };
         }
@@ -55,7 +66,7 @@ export function registerManageBroadcasts(server: McpServer): void {
 
         if (action === "get") {
           const broadcast = await client.broadcasts.get(broadcastId);
-          const row = broadcast as Record<string, unknown>;
+          const row = broadcast as unknown as Record<string, unknown>;
           const insight = row.insight_status
             ? {
                 status: row.insight_status,
@@ -83,13 +94,16 @@ export function registerManageBroadcasts(server: McpServer): void {
         }
 
         if (action === "update") {
-          const input: Record<string, unknown> = {};
-          if (title !== undefined) input.title = title;
-          if (messageType !== undefined) input.messageType = messageType;
-          if (messageContent !== undefined) input.messageContent = messageContent;
-          if (targetType !== undefined) input.targetType = targetType;
-          if (targetTagId !== undefined) input.targetTagId = targetTagId;
-          if (scheduledAt !== undefined) input.scheduledAt = scheduledAt;
+          const input = buildUpdateInput({
+            title,
+            messages,
+            messageType,
+            messageContent,
+            altText,
+            targetType,
+            targetTagId,
+            scheduledAt,
+          });
           const broadcast = await client.broadcasts.update(broadcastId, input);
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, broadcast }, null, 2) }] };
         }

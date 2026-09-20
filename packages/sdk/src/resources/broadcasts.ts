@@ -1,6 +1,31 @@
 import type { HttpClient } from '../http.js'
 import type { ApiResponse, Broadcast, CreateBroadcastInput, UpdateBroadcastInput, SegmentCondition } from '../types.js'
 
+const MAX_BROADCAST_MESSAGES = 5
+
+type BroadcastMessageFields = {
+  messages?: unknown[]
+  messageType?: unknown
+  messageContent?: unknown
+  altText?: unknown
+}
+
+function validateMessageFields(input: BroadcastMessageFields): void {
+  if (input.messages === undefined) return
+
+  if (
+    input.messageType !== undefined ||
+    input.messageContent !== undefined ||
+    input.altText !== undefined
+  ) {
+    throw new Error('messages cannot be combined with messageType, messageContent, or altText')
+  }
+
+  if (input.messages.length < 1 || input.messages.length > MAX_BROADCAST_MESSAGES) {
+    throw new RangeError(`messages must contain between 1 and ${MAX_BROADCAST_MESSAGES} items`)
+  }
+}
+
 export class BroadcastsResource {
   constructor(
     private readonly http: HttpClient,
@@ -20,6 +45,7 @@ export class BroadcastsResource {
   }
 
   async create(input: CreateBroadcastInput & { lineAccountId?: string }): Promise<Broadcast> {
+    validateMessageFields(input)
     const body = { ...input }
     if (!body.lineAccountId && this.defaultAccountId) {
       body.lineAccountId = this.defaultAccountId
@@ -29,6 +55,7 @@ export class BroadcastsResource {
   }
 
   async update(id: string, input: UpdateBroadcastInput): Promise<Broadcast> {
+    validateMessageFields(input)
     const res = await this.http.put<ApiResponse<Broadcast>>(`/api/broadcasts/${id}`, input)
     return res.data
   }

@@ -87,6 +87,70 @@ describe('BroadcastsResource', () => {
     expect(result).toEqual(broadcast)
   })
 
+  it('create(input) sends one message in the new format', async () => {
+    const input = {
+      title: 'Single message',
+      messages: [{ type: 'text' as const, content: 'Hello' }],
+      targetType: 'all' as const,
+    }
+    const http = mockHttp({ post: vi.fn().mockResolvedValue({ success: true, data: {} }) })
+    const resource = new BroadcastsResource(http)
+
+    await resource.create(input)
+
+    expect(http.post).toHaveBeenCalledWith('/api/broadcasts', input)
+  })
+
+  it('create(input) preserves the order of five messages', async () => {
+    const messages = [
+      { type: 'text' as const, content: 'one' },
+      { type: 'image' as const, content: '{"originalContentUrl":"https://example.com/2.jpg"}' },
+      { type: 'flex' as const, content: '{"type":"bubble"}', altText: 'three' },
+      { type: 'text' as const, content: 'four' },
+      { type: 'text' as const, content: 'five' },
+    ]
+    const input = { title: 'Five messages', messages, targetType: 'all' as const }
+    const http = mockHttp({ post: vi.fn().mockResolvedValue({ success: true, data: {} }) })
+    const resource = new BroadcastsResource(http)
+
+    await resource.create(input)
+
+    expect(http.post).toHaveBeenCalledWith('/api/broadcasts', input)
+    expect((http.post as ReturnType<typeof vi.fn>).mock.calls[0][1].messages).toEqual(messages)
+  })
+
+  it.each([
+    ['zero', []],
+    ['six', Array.from({ length: 6 }, (_, index) => ({ type: 'text' as const, content: `message-${index}` }))],
+  ])('rejects %s messages before making a request', async (_label, messages) => {
+    const http = mockHttp({ post: vi.fn() })
+    const resource = new BroadcastsResource(http)
+
+    await expect(resource.create({
+      title: 'Invalid messages',
+      messages,
+      targetType: 'all',
+    })).rejects.toThrow('messages must contain between 1 and 5 items')
+    expect(http.post).not.toHaveBeenCalled()
+  })
+
+  it('rejects new and legacy message fields used together', async () => {
+    const http = mockHttp({ post: vi.fn() })
+    const resource = new BroadcastsResource(http)
+    const mixedInput = {
+      title: 'Ambiguous',
+      messages: [{ type: 'text' as const, content: 'new' }],
+      messageType: 'text' as const,
+      messageContent: 'legacy',
+      targetType: 'all' as const,
+    }
+
+    await expect(resource.create(mixedInput as never)).rejects.toThrow(
+      'messages cannot be combined with messageType, messageContent, or altText',
+    )
+    expect(http.post).not.toHaveBeenCalled()
+  })
+
   it('update(id, input) calls PUT /api/broadcasts/:id with input', async () => {
     const updatedBroadcast = {
       id: 'bc-1',
@@ -111,6 +175,35 @@ describe('BroadcastsResource', () => {
     const result = await resource.update('bc-1', input)
     expect(http.put).toHaveBeenCalledWith('/api/broadcasts/bc-1', input)
     expect(result).toEqual(updatedBroadcast)
+  })
+
+  it('update(id, input) sends the complete messages array in order', async () => {
+    const messages = [
+      { type: 'text' as const, content: 'updated first' },
+      { type: 'image' as const, content: '{"originalContentUrl":"https://example.com/updated.jpg"}' },
+    ]
+    const input = { messages }
+    const http = mockHttp({ put: vi.fn().mockResolvedValue({ success: true, data: {} }) })
+    const resource = new BroadcastsResource(http)
+
+    await resource.update('bc-1', input)
+
+    expect(http.put).toHaveBeenCalledWith('/api/broadcasts/bc-1', input)
+    expect((http.put as ReturnType<typeof vi.fn>).mock.calls[0][1].messages).toEqual(messages)
+  })
+
+  it('rejects new and legacy message fields used together for update', async () => {
+    const http = mockHttp({ put: vi.fn() })
+    const resource = new BroadcastsResource(http)
+    const mixedInput = {
+      messages: [{ type: 'text' as const, content: 'new' }],
+      messageContent: 'legacy',
+    }
+
+    await expect(resource.update('bc-1', mixedInput as never)).rejects.toThrow(
+      'messages cannot be combined with messageType, messageContent, or altText',
+    )
+    expect(http.put).not.toHaveBeenCalled()
   })
 
   it('delete(id) calls DELETE /api/broadcasts/:id', async () => {
