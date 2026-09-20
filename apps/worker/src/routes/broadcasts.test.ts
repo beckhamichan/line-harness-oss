@@ -9,6 +9,9 @@ const dbMocks = {
   createBroadcast: vi.fn(),
   updateBroadcast: vi.fn(),
   deleteBroadcast: vi.fn(),
+  getBroadcastMessages: vi.fn(),
+  replaceBroadcastMessages: vi.fn(),
+  MAX_BROADCAST_MESSAGES: 5,
   getLineAccountById: vi.fn(),
   getBroadcastTargetTagIds: vi.fn(),
   resolveTagBroadcastRecipients: vi.fn(),
@@ -140,6 +143,18 @@ beforeEach(() => {
     if (vi.isMockFunction(fn)) fn.mockReset();
   }
   dbMocks.jstNow.mockReturnValue('2026-07-11T21:00:00+09:00');
+  dbMocks.getBroadcastMessages.mockResolvedValue([]);
+  dbMocks.replaceBroadcastMessages.mockImplementation(async (_db, id, messages) =>
+    messages.map((message: { messageType: string; messageContent: string; altText?: string | null }, position: number) => ({
+      id: `${id}:${position}`,
+      broadcast_id: id,
+      position,
+      message_type: message.messageType,
+      message_content: message.messageContent,
+      alt_text: message.altText ?? null,
+      created_at: '2026-07-11T21:00:00+09:00',
+    })),
+  );
   dbMocks.getBroadcastTargetTagIds.mockImplementation((broadcast: { target_tag_ids?: string | null; target_tag_id?: string | null }) => {
     if (broadcast.target_tag_ids) return JSON.parse(broadcast.target_tag_ids);
     return broadcast.target_tag_id ? [broadcast.target_tag_id] : [];
@@ -445,6 +460,307 @@ describe('standard tag broadcast targeting', () => {
     expect(calls).toContainEqual(expect.objectContaining({
       binds: ['{"kind":"tag_or_queued"}', 'broadcast-1'],
     }));
+  });
+});
+
+describe('broadcast messages API', () => {
+  const fiveMessages = [
+    { type: 'text', content: 'first' },
+    {
+      type: 'image',
+      content: JSON.stringify({
+        originalContentUrl: 'https://example.test/original.jpg',
+        previewImageUrl: 'https://example.test/preview.jpg',
+      }),
+    },
+    { type: 'flex', content: '{"type":"bubble"}', altText: 'third preview' },
+    { type: 'text', content: 'fourth' },
+    { type: 'text', content: 'fifth' },
+  ];
+
+  test('creates and returns five ordered mixed messages while mirroring the first message', async () => {
+    const created = { ...makeBroadcast(null), status: 'draft' };
+    dbMocks.createBroadcast.mockResolvedValue(created);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Five messages',
+        targetType: 'all',
+        messages: fiveMessages,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createBroadcast).toHaveBeenCalledWith(db, expect.objectContaining({
+      messageType: 'text',
+      messageContent: 'first',
+    }));
+    expect(dbMocks.replaceBroadcastMessages).toHaveBeenCalledWith(db, 'broadcast-1', [
+      { messageType: 'text', messageContent: 'first', altText: null },
+      expect.objectContaining({ messageType: 'image' }),
+      { messageType: 'flex', messageContent: '{"type":"bubble"}', altText: 'third preview' },
+      { messageType: 'text', messageContent: 'fourth', altText: null },
+      { messageType: 'text', messageContent: 'fifth', altText: null },
+    ]);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      data: {
+        messageType: 'text',
+        messageContent: 'first',
+        messages: fiveMessages.map((message) => ({ altText: null, ...message })),
+      },
+    });
+  });
+
+  test.each([
+    ['zero messages', []],
+    ['six messages', Array.from({ length: 6 }, (_, index) => ({ type: 'text', content: `message-${index}` }))],
+  ])('rejects %s with 400', async (_label, messages) => {
+    const res = await setupApp(makeDb().db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Invalid', targetType: 'all', messages }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createBroadcast).not.toHaveBeenCalled();
+    expect(dbMocks.replaceBroadcastMessages).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { label: 'non-array messages', messages: 'text' },
+    { label: 'unsupported type', messages: [{ type: 'video', content: 'x' }] },
+    { label: 'empty content', messages: [{ type: 'text', content: '   ' }] },
+    { label: 'invalid altText', messages: [{ type: 'flex', content: '{}', altText: 123 }] },
+  ])('rejects $label with 400', async ({ messages }) => {
+    const res = await setupApp(makeDb().db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Invalid', targetType: 'all', messages }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createBroadcast).not.toHaveBeenCalled();
+  });
+
+  test('keeps the legacy create fields as a one-message request', async () => {
+    const created = { ...makeBroadcast(null), status: 'draft' };
+    dbMocks.createBroadcast.mockResolvedValue(created);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Legacy',
+        targetType: 'all',
+        messageType: 'flex',
+        messageContent: '{"type":"bubble"}',
+        altText: 'legacy preview',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.replaceBroadcastMessages).toHaveBeenCalledWith(db, 'broadcast-1', [{
+      messageType: 'flex',
+      messageContent: '{"type":"bubble"}',
+      altText: 'legacy preview',
+    }]);
+    expect(await res.json()).toMatchObject({
+      data: {
+        messageType: 'flex',
+        messageContent: '{"type":"bubble"}',
+        altText: 'legacy preview',
+        messages: [{ type: 'flex', content: '{"type":"bubble"}', altText: 'legacy preview' }],
+      },
+    });
+  });
+
+  test('removes a half-created draft when saving its message rows fails', async () => {
+    const created = { ...makeBroadcast(null), status: 'draft' };
+    dbMocks.createBroadcast.mockResolvedValue(created);
+    dbMocks.replaceBroadcastMessages.mockRejectedValue(new Error('mock D1 failure'));
+    dbMocks.deleteBroadcast.mockResolvedValue(undefined);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { db } = makeDb();
+
+    try {
+      const res = await setupApp(db).request('/api/broadcasts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Cleanup',
+          targetType: 'all',
+          messages: [{ type: 'text', content: 'hello' }],
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(dbMocks.deleteBroadcast).toHaveBeenCalledWith(db, 'broadcast-1');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  test('updates a multi-message draft when messages is explicit', async () => {
+    const existing = { ...makeBroadcast(null), status: 'draft' };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.getBroadcastMessages.mockResolvedValue([
+      { position: 0, message_type: 'text', message_content: 'old-1', alt_text: null },
+      { position: 1, message_type: 'text', message_content: 'old-2', alt_text: null },
+    ]);
+    dbMocks.updateBroadcast.mockResolvedValue(existing);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [{ type: 'text', content: 'replacement' }] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.replaceBroadcastMessages).toHaveBeenCalledWith(db, 'broadcast-1', [{
+      messageType: 'text',
+      messageContent: 'replacement',
+      altText: null,
+    }]);
+    expect(await res.json()).toMatchObject({
+      data: { messageContent: 'replacement', messages: [{ type: 'text', content: 'replacement' }] },
+    });
+  });
+
+  test('rejects legacy message fields when two or more messages are saved', async () => {
+    const existing = { ...makeBroadcast(null), status: 'draft' };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.getBroadcastMessages.mockResolvedValue([
+      { position: 0, message_type: 'text', message_content: 'first', alt_text: null },
+      { position: 1, message_type: 'text', message_content: 'second', alt_text: null },
+    ]);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messageContent: 'silently shrink' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ success: false });
+    expect(dbMocks.updateBroadcast).not.toHaveBeenCalled();
+    expect(dbMocks.replaceBroadcastMessages).not.toHaveBeenCalled();
+  });
+
+  test('allows a legacy partial update when exactly one message is saved', async () => {
+    const existing = { ...makeBroadcast(null), status: 'draft' };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.getBroadcastMessages.mockResolvedValue([
+      { position: 0, message_type: 'flex', message_content: '{"type":"bubble"}', alt_text: 'old preview' },
+    ]);
+    dbMocks.updateBroadcast.mockResolvedValue(existing);
+    const { db } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ altText: 'new preview' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.replaceBroadcastMessages).toHaveBeenCalledWith(db, 'broadcast-1', [{
+      messageType: 'flex',
+      messageContent: '{"type":"bubble"}',
+      altText: 'new preview',
+    }]);
+  });
+
+  test.each([
+    { label: 'zero messages', messages: [] },
+    { label: 'six messages', messages: Array.from({ length: 6 }, () => ({ type: 'text', content: 'x' })) },
+  ])(
+    'rejects $label on update with 400',
+    async ({ messages }) => {
+      const existing = { ...makeBroadcast(null), status: 'draft' };
+      dbMocks.getBroadcastById.mockResolvedValue(existing);
+      dbMocks.getBroadcastMessages.mockResolvedValue([
+        { position: 0, message_type: 'text', message_content: 'old', alt_text: null },
+      ]);
+
+      const res = await setupApp(makeDb().db).request('/api/broadcasts/broadcast-1', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(dbMocks.updateBroadcast).not.toHaveBeenCalled();
+    },
+  );
+
+  test('returns ordered messages from both list and detail endpoints', async () => {
+    const existing = { ...makeBroadcast(null), status: 'draft' };
+    const rows = [
+      { position: 0, message_type: 'text', message_content: 'first', alt_text: null },
+      { position: 1, message_type: 'flex', message_content: '{"type":"bubble"}', alt_text: 'second preview' },
+    ];
+    dbMocks.getBroadcasts.mockResolvedValue([existing]);
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.getBroadcastMessages.mockResolvedValue(rows);
+    const app = setupApp(makeDb().db);
+
+    const listRes = await app.request('/api/broadcasts');
+    const detailRes = await app.request('/api/broadcasts/broadcast-1');
+
+    expect(listRes.status).toBe(200);
+    expect(detailRes.status).toBe(200);
+    const expected = [
+      { type: 'text', content: 'first', altText: null },
+      { type: 'flex', content: '{"type":"bubble"}', altText: 'second preview' },
+    ];
+    expect(await listRes.json()).toMatchObject({ data: [{ messages: expected }] });
+    expect(await detailRes.json()).toMatchObject({
+      data: { messageType: 'text', messageContent: 'first', messages: expected },
+    });
+  });
+
+  test('returns one compatibility message for a legacy row with no child messages', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      status: 'draft',
+      message_type: 'text',
+      message_content: 'legacy only',
+      alt_text: null,
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    dbMocks.getBroadcastMessages.mockResolvedValue([]);
+
+    const res = await setupApp(makeDb().db).request('/api/broadcasts/broadcast-1');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      data: {
+        messageType: 'text',
+        messageContent: 'legacy only',
+        messages: [{ type: 'text', content: 'legacy only', altText: null }],
+      },
+    });
+  });
+
+  test('counts distinct recipients in per-account stats when each message has its own log row', async () => {
+    const existing = {
+      ...makeBroadcast(null),
+      status: 'draft',
+      line_account_id: 'account-1',
+    };
+    dbMocks.getBroadcastById.mockResolvedValue(existing);
+    const { db, calls } = makeDb();
+
+    const res = await setupApp(db).request('/api/broadcasts/broadcast-1/per-account-stats');
+
+    expect(res.status).toBe(200);
+    expect(calls.some((call) => call.sql.includes('COUNT(DISTINCT ml.friend_id) AS sent'))).toBe(true);
   });
 });
 
