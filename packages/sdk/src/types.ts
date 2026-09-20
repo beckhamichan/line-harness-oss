@@ -27,6 +27,12 @@ export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual'
 export type MessageType = 'text' | 'image' | 'flex'
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent'
 
+export interface BroadcastMessageInput {
+  type: MessageType
+  content: string
+  altText?: string | null
+}
+
 // ─── Friend ─────────────────────────────────────────────
 export interface Friend {
   id: string
@@ -217,6 +223,8 @@ export interface Broadcast {
   title: string
   messageType: MessageType
   messageContent: string
+  altText: string | null
+  messages: BroadcastMessageInput[]
   targetType: 'all' | 'tag'
   targetTagId: string | null
   status: BroadcastStatus
@@ -248,24 +256,51 @@ export interface BroadcastWithInsight extends Broadcast {
   insight?: BroadcastInsight | null
 }
 
-export interface CreateBroadcastInput {
+interface BroadcastInputBase {
   title: string
-  messageType: MessageType
-  messageContent: string
   targetType: 'all' | 'tag'
   targetTagId?: string
   scheduledAt?: string
-  altText?: string
 }
 
-export interface UpdateBroadcastInput {
+type BroadcastMessageSelection =
+  | {
+      messages: BroadcastMessageInput[]
+      messageType?: never
+      messageContent?: never
+      altText?: never
+    }
+  | {
+      messages?: never
+      messageType: MessageType
+      messageContent: string
+      altText?: string | null
+    }
+
+export type CreateBroadcastInput = BroadcastInputBase & BroadcastMessageSelection
+
+interface UpdateBroadcastFields {
   title?: string
-  messageType?: MessageType
-  messageContent?: string
   targetType?: 'all' | 'tag'
   targetTagId?: string | null
   scheduledAt?: string | null
 }
+
+type UpdateBroadcastMessageSelection =
+  | {
+      messages: BroadcastMessageInput[]
+      messageType?: never
+      messageContent?: never
+      altText?: never
+    }
+  | {
+      messages?: never
+      messageType?: MessageType
+      messageContent?: string
+      altText?: string | null
+    }
+
+export type UpdateBroadcastInput = UpdateBroadcastFields & UpdateBroadcastMessageSelection
 
 // ─── Rich Menu ──────────────────────────────────────────
 export interface RichMenuBounds {
