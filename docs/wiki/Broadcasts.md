@@ -2,7 +2,9 @@
 
 ## 概要
 
-一斉配信（ブロードキャスト）は、友だち全員またはタグ/セグメントで絞り込んだ対象にメッセージを一括送信する機能です。下書き保存、予約配信、セグメント配信に対応しています。ステルスモードにより、バッチ間遅延やメッセージバリエーションで自然な送信パターンを実現します。
+一斉配信（ブロードキャスト）は、友だち全員またはタグ/セグメントで絞り込んだ対象にメッセージを一括送信する機能です。1件の配信に、順序つきの `text` / `image` / `flex` メッセージを1〜5件登録できます。下書き保存、予約配信、セグメント配信、複数アカウント重複除外配信に対応しています。
+
+保存したメッセージは、手動送信、予約配信、500人超の分割送信、複数アカウント重複除外、セグメント送信、テスト送信のすべてで、各送信バッチの1回のLINE APIリクエストへ同じ順序でまとめられます。URL自動計測、`{{liff_id}}` 置換、Flexの `altText` はメッセージごとに適用されます。
 
 ## データモデル
 
@@ -12,9 +14,10 @@
 |--------|-----|------|
 | `id` | TEXT (UUID) | 主キー |
 | `title` | TEXT | 配信タイトル（管理用） |
-| `message_type` | TEXT | `text` / `image` / `flex` |
-| `message_content` | TEXT | メッセージ内容 |
-| `target_type` | TEXT | `all` / `tag` |
+| `message_type` | TEXT | 先頭メッセージの種類（旧API互換ミラー） |
+| `message_content` | TEXT | 先頭メッセージの内容（旧API互換ミラー） |
+| `alt_text` | TEXT | 先頭メッセージの代替テキスト（旧API互換ミラー） |
+| `target_type` | TEXT | `all` / `tag` / `multi-account-dedup` |
 | `target_tag_id` | TEXT | tag 指定時のタグID |
 | `status` | TEXT | `draft` / `scheduled` / `sending` / `sent` |
 | `scheduled_at` | TEXT | 予約配信日時 (JST, null = 即時) |
@@ -23,6 +26,22 @@
 | `success_count` | INTEGER | 配信成功数 |
 | `created_at` | TEXT | 作成日時 (JST) |
 
+### broadcast_messages テーブル
+
+順序つきメッセージの正本です。`broadcasts.message_type` / `message_content` / `alt_text` は、後方互換のためposition 0の内容をミラーします。
+
+| カラム | 型 | 説明 |
+|--------|-----|------|
+| `id` | TEXT | 主キー |
+| `broadcast_id` | TEXT | `broadcasts.id`。親削除時にCASCADE削除 |
+| `position` | INTEGER | 送信順（0〜4、配信内で一意） |
+| `message_type` | TEXT | `text` / `image` / `flex` |
+| `message_content` | TEXT | メッセージ内容 |
+| `alt_text` | TEXT | Flex代替テキスト（任意） |
+| `created_at` | TEXT | 作成日時 (JST) |
+
+受信者を特定できる配信経路では、`messages_log` が受信者ごと・メッセージごとに1行を保存します。`message_index` は配信内の順序（0〜4）で、一斉配信以外のログでは `NULL` です。
+
 ### API レスポンス形式
 
 ```json
@@ -30,7 +49,25 @@
   "id": "broadcast-uuid",
   "title": "3月キャンペーンのお知らせ",
   "messageType": "text",
-  "messageContent": "本日限定！全品30%OFF！",
+  "messageContent": "本日限定のお知らせです。",
+  "altText": null,
+  "messages": [
+    {
+      "type": "text",
+      "content": "本日限定のお知らせです。",
+      "altText": null
+    },
+    {
+      "type": "image",
+      "content": "{\"originalContentUrl\":\"https://example.com/sale.jpg\",\"previewImageUrl\":\"https://example.com/sale-preview.jpg\"}",
+      "altText": null
+    },
+    {
+      "type": "text",
+      "content": "詳しくはこちら: https://example.com/sale",
+      "altText": null
+    }
+  ],
   "targetType": "tag",
   "targetTagId": "vip-tag-uuid",
   "status": "sent",
@@ -41,6 +78,14 @@
   "createdAt": "2026-03-23T13:50:00.000+09:00"
 }
 ```
+
+`messageType` / `messageContent` / `altText` は常に `messages[0]` の互換ミラーです。新しいクライアントは `messages` を正本として扱ってください。`broadcast_messages` が空の旧データは、親行の互換フィールドから1件の `messages` として返されます。
+
+## 管理画面
+
+新規配信画面では、メッセージを最大5件まで追加し、各メッセージの種類・内容・Flex代替テキストを個別に編集できます。上矢印・下矢印で送信順を変更でき、不要なメッセージは削除できます。ただし最後の1件は削除できません。
+
+各メッセージには個別プレビューが表示されます。一覧画面は複数メッセージの件数を、詳細画面は保存順にすべてのメッセージを表示します。
 
 ## ステータスライフサイクル
 
@@ -78,7 +123,7 @@ sent
 LINE の `broadcast` API を使用（全フォロワーに送信）:
 
 ```typescript
-await lineClient.broadcast([message]);
+await lineClient.broadcast(messages); // 保存順の1〜5件
 ```
 
 - LINE Messaging API のブロードキャスト機能を使用
@@ -102,14 +147,14 @@ for (let i = 0; i < friends.length; i += 500) {
     await sleep(delay);
   }
 
-  // メッセージバリエーション（テキストのみ）
-  if (message.type === 'text' && totalBatches > 1) {
-    batchMessage = { ...message, text: addMessageVariation(message.text, batchIndex) };
-  }
+  // メッセージバリエーション（配列内のテキストに適用）
+  const batchMessages = addBatchMessageVariations(messages, batchIndex, totalBatches);
 
-  await lineClient.multicast(lineUserIds, [batchMessage]);
+  await lineClient.multicast(lineUserIds, batchMessages);
 }
 ```
+
+複数メッセージは吹き出しごとに別リクエストへ分割しません。バッチごとに1つの `messages` 配列として渡すため、同一バッチ内で一部のメッセージだけ送られる状態を避けます。
 
 ### ステルス遅延計算
 
@@ -197,6 +242,10 @@ curl -s "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
       "title": "VIPセール告知",
       "messageType": "text",
       "messageContent": "VIP限定30%OFF！",
+      "altText": null,
+      "messages": [
+        { "type": "text", "content": "VIP限定30%OFF！", "altText": null }
+      ],
       "targetType": "tag",
       "targetTagId": "vip-tag-uuid",
       "status": "sent",
@@ -211,6 +260,10 @@ curl -s "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
       "title": "来週のイベント案内",
       "messageType": "flex",
       "messageContent": "{...}",
+      "altText": "来週のイベント案内",
+      "messages": [
+        { "type": "flex", "content": "{...}", "altText": "来週のイベント案内" }
+      ],
       "targetType": "all",
       "targetTagId": null,
       "status": "scheduled",
@@ -234,18 +287,31 @@ curl -s "https://your-worker.your-subdomain.workers.dev/api/broadcasts/BROADCAST
 ### POST /api/broadcasts — 配信作成
 
 ```bash
-# テキスト配信（下書き — 全員向け）
+# 最大5件の複数メッセージ配信（保存順に送信）
 curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "title": "お知らせ",
-    "messageType": "text",
-    "messageContent": "こんにちは！本日のお知らせです。",
+    "title": "セール告知",
+    "messages": [
+      {
+        "type": "text",
+        "content": "本日限定のお知らせです。"
+      },
+      {
+        "type": "image",
+        "content": "{\"originalContentUrl\":\"https://example.com/sale.jpg\",\"previewImageUrl\":\"https://example.com/sale-preview.jpg\"}"
+      },
+      {
+        "type": "flex",
+        "content": "{\"type\":\"bubble\",\"body\":{\"type\":\"box\",\"layout\":\"vertical\",\"contents\":[{\"type\":\"text\",\"text\":\"詳しく見る\"}]}}",
+        "altText": "セールの詳細"
+      }
+    ],
     "targetType": "all"
   }'
 
-# タグ指定 + 予約配信
+# 旧API互換の1メッセージ作成も引き続き利用可能
 curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
@@ -257,17 +323,6 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
     "targetTagId": "VIP_TAG_UUID",
     "scheduledAt": "2026-03-24T10:00:00.000+09:00"
   }'
-
-# Flex メッセージ配信
-curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "カルーセル商品紹介",
-    "messageType": "flex",
-    "messageContent": "{\"type\":\"carousel\",\"contents\":[{\"type\":\"bubble\",\"body\":{\"type\":\"box\",\"layout\":\"vertical\",\"contents\":[{\"type\":\"text\",\"text\":\"商品A\"}]}}]}",
-    "targetType": "all"
-  }'
 ```
 
 リクエストボディ:
@@ -275,10 +330,18 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
 | フィールド | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
 | `title` | string | 必須 | 管理用タイトル |
-| `messageType` | string | 必須 | `text` / `image` / `flex` |
-| `messageContent` | string | 必須 | メッセージ内容 |
-| `targetType` | string | 必須 | `all` / `tag` |
-| `targetTagId` | string | 条件付き | targetType=tag の場合必須 |
+| `messages` | array | 条件付き | 新形式。順序つき1〜5件。0件・6件以上は400 |
+| `messages[].type` | string | 必須 | `text` / `image` / `flex` |
+| `messages[].content` | string | 必須 | 空白以外を含むメッセージ内容 |
+| `messages[].altText` | string \| null | 任意 | Flex代替テキスト |
+| `messageType` | string | 条件付き | 旧形式。`messages` 未指定時に `messageContent` と組で必須 |
+| `messageContent` | string | 条件付き | 旧形式の単一メッセージ内容 |
+| `altText` | string \| null | 任意 | 旧形式のFlex代替テキスト |
+| `targetType` | string | 必須 | `all` / `tag` / `multi-account-dedup` |
+| `targetTagId` | string | 条件付き | 単一タグ指定、または重複除外配信の任意タグ |
+| `targetTagIds` | string[] | 条件付き | `targetType=tag` のタグ集合（OR条件） |
+| `accountIds` | string[] | 条件付き | `multi-account-dedup` で必須 |
+| `dedupPriority` | string[] | 条件付き | `multi-account-dedup` で必須。空配列可 |
 | `scheduledAt` | string | 任意 | 予約日時 (JST)。null = draft |
 
 レスポンス (201):
@@ -291,6 +354,10 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts" \
     "title": "お知らせ",
     "messageType": "text",
     "messageContent": "こんにちは！",
+    "altText": null,
+    "messages": [
+      { "type": "text", "content": "こんにちは！", "altText": null }
+    ],
     "targetType": "all",
     "targetTagId": null,
     "status": "draft",
@@ -313,11 +380,17 @@ curl -X PUT "https://your-worker.your-subdomain.workers.dev/api/broadcasts/BROAD
   -H "Content-Type: application/json" \
   -d '{
     "title": "更新後のタイトル",
-    "messageContent": "更新後のメッセージ",
+    "messages": [
+      { "type": "text", "content": "更新後の導入文" },
+      { "type": "text", "content": "更新後の申込導線" }
+    ],
     "scheduledAt": "2026-03-25T18:00:00.000+09:00"
   }'
 ```
 
+- メッセージを変更するときは、変更後の配列全体を `messages` へ指定する
+- 複数メッセージが保存された配信を旧フィールドだけで更新すると、意図せず1件へ縮むことを防ぐため400エラー
+- 単一メッセージの配信では、旧フィールドによる更新も引き続き利用可能
 - `scheduledAt` を設定 → status は `scheduled` に自動変更
 - `scheduledAt` を null に設定 → status は `draft` に自動変更
 - `sending` / `sent` の配信は更新不可（400エラー）
@@ -340,6 +413,7 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts/BROA
 
 - `sending` / `sent` の場合は 400 エラー
 - 配信失敗時は status が `draft` にリセット（再試行可）
+- 1〜5件すべてを保存順の1回のLINE APIリクエストとして送信
 
 ### POST /api/broadcasts/:id/send-segment — セグメント配信
 
@@ -376,6 +450,18 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts/BROA
   }'
 ```
 
+手動、予約、500人超の分割、複数アカウント重複除外、セグメント、テスト送信の各経路は、いずれも同じ `messages` 配列を使用します。`broadcast_messages` に行がない旧データでは、親行の互換フィールドから単一メッセージを組み立てます。
+
+## 配信禁止時間帯
+
+JST 23:00〜翌7:00は一斉配信を行いません。
+
+- 禁止時間帯を指定した予約作成・更新は400エラー
+- 禁止時間帯の手動送信・テスト送信は、送信前に拒否
+- Cronは禁止時間帯に予約配信を取得せず、7:00以降の実行へ持ち越す
+- 分割送信・複数アカウント重複除外ではバッチ境界でも再確認し、未送信分だけを7:00以降へ持ち越す
+- メッセージ数によってガードの位置や判定時刻は変わらない
+
 ## 予約配信の仕組み
 
 1. `scheduledAt` を JST 文字列で設定 → status が `scheduled` に
@@ -386,6 +472,8 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/broadcasts/BROA
 注意: Cron は5分間隔のため、予約時刻から最大5分の遅延が発生する可能性があります。
 
 ## SDK 使用例
+
+> 現在のSDK/MCPは旧形式の単一メッセージ作成・更新のみ対応しています。複数メッセージは管理画面またはHTTP APIの `messages` を使用してください。SDK/MCPの複数メッセージ対応はIssue #56で扱います。
 
 ```typescript
 import { LineHarness } from '@line-harness/sdk'
@@ -459,3 +547,57 @@ await client.broadcastToSegment('text', 'フィルタ済みメッセージ', {
 | friend が unfollow 済み | `is_following=0` の友だちはタグ配信時に自動除外 |
 
 配信失敗ログは Workers のコンソールログに出力されます。
+
+## ロールアウトとロールバック
+
+### ロールアウト順
+
+1. migration 048を適用し、`broadcast_messages` と `messages_log.message_index` を追加
+2. 複数メッセージ対応Workerを反映
+3. 複数メッセージ対応の管理画面を反映
+
+本番migration、deploy、LINEテスト送信・実送信は、Ownerの明示承認後だけ実施します。
+
+### ロールバック条件
+
+次のいずれかが確認された場合は、新規作成・送信を止めてロールバックを検討します。
+
+- 保存順とAPIレスポンス順が一致しない
+- 同一受信者へ同じ配信が二重送信される
+- 1回の配信で一部のメッセージだけ送られる
+- 既存の単一メッセージ配信が表示・編集・送信できない
+- 禁止時間帯ガードが送信経路のいずれかで機能しない
+- `messages_log` の `message_index` と実際の送信順が一致しない
+
+### 安全なロールバック手順
+
+1. 管理画面を旧版へ戻し、新しい複数メッセージ下書きが増えないようにする。
+2. Workerを戻す前に、未完了の複数メッセージ配信を読み取り専用SQLで確認する。
+
+   ```sql
+   SELECT b.id, b.status, COUNT(bm.id) AS message_count
+   FROM broadcasts b
+   JOIN broadcast_messages bm ON bm.broadcast_id = b.id
+   WHERE b.status IN ('draft', 'scheduled', 'sending')
+   GROUP BY b.id, b.status
+   HAVING COUNT(bm.id) >= 2;
+   ```
+
+3. `sending` が存在する場合はWorkerを即時ダウングレードせず、送信状態とログを確認する。再送すると二重送信になる可能性があるため、状態変更や再送はOwner判断で行う。
+4. `draft` / `scheduled` の複数メッセージ配信は、旧Workerでは先頭メッセージしか扱えない。自動で1件へ縮めず、現行Workerを維持するか、配信停止・内容変更をOwnerが個別に決める。
+5. Workerを旧版へ戻せる条件がそろった後にのみダウングレードする。親行の旧フィールドは先頭メッセージをミラーしているため、既存の単一メッセージ配信は継続できる。
+6. migration 048は追加専用なので、緊急時も `broadcast_messages` テーブルや `message_index` 列を削除しない。旧コードは追加スキーマを無視でき、データを残したまま再ロールフォワードできる。
+
+`broadcast_messages` が空の配信は、WorkerとAPIが `broadcasts.message_type` / `message_content` / `alt_text` から1件を復元します。行がある場合は `position` の昇順が正本です。位置の欠落や範囲外を調べるには次の読み取り専用SQLを使います。
+
+```sql
+SELECT broadcast_id,
+       COUNT(*) AS message_count,
+       MIN(position) AS first_position,
+       MAX(position) AS last_position
+FROM broadcast_messages
+GROUP BY broadcast_id
+HAVING COUNT(*) > 5
+   OR MIN(position) <> 0
+   OR MAX(position) <> COUNT(*) - 1;
+```
