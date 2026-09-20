@@ -52,7 +52,8 @@
     "044_forms_og.sql",
     "045_menus_auto_tag.sql",
     "046_auto_replies_trigger_tag.sql",
-    "047_broadcast_target_tag_ids.sql"
+    "047_broadcast_target_tag_ids.sql",
+    "048_broadcast_messages.sql"
   ],
-  "migrationCount": 53
+  "migrationCount": 54
 }
