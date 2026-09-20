@@ -11,7 +11,14 @@ import {
 } from '@line-crm/db';
 import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { processBroadcastSend, buildMessage, processQueuedBroadcasts } from '../services/broadcast.js';
+import {
+  autoTrackBroadcastMessages,
+  buildMessages,
+  createBroadcastMessageLogStatements,
+  getEffectiveBroadcastMessages,
+  processBroadcastSend,
+  processQueuedBroadcasts,
+} from '../services/broadcast.js';
 import { isDeliveryAllowed, isScheduledAtInQuietHours, DeliveryWindowBlockedError } from '../services/delivery-window.js';
 import { computeDedupBroadcastPreview } from '../services/dedup-broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
@@ -955,22 +962,19 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
     if (!account) return c.json({ success: false, error: 'LINE account not found' }, 400);
     const lineClient = new LineClient(account.channel_access_token);
 
-    // Build message with test label
-    let messageContent = broadcast.message_content;
-    if (broadcast.message_type === 'text') {
-      messageContent = `【テスト配信】\n${messageContent}`;
-    }
-
-    // Auto-track URLs — Flex はスキップ (image.url / action.uri まで /t/ に置換され
-    // 画像が真っ白になるため。hotfix: 実送信 processBroadcastSend と同方針)
-    const { autoTrackContent } = await import('../services/auto-track.js');
-    const tracked = broadcast.message_type === 'flex'
-      ? { messageType: broadcast.message_type, content: messageContent }
-      : await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
-
-    const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
-    const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);
-    const message = buildMessage(tracked.messageType, tracked.content, altText);
+    // Add the test label to every text bubble, then apply the same per-message
+    // tracking and LIFF rendering used by production delivery.
+    const sourceMessages = (await getEffectiveBroadcastMessages(c.env.DB, broadcast)).map((message) => ({
+      ...message,
+      messageContent: message.messageType === 'text'
+        ? `【テスト配信】\n${message.messageContent}`
+        : message.messageContent,
+    }));
+    const trackedMessages = await autoTrackBroadcastMessages(c.env.DB, sourceMessages, c.env.WORKER_URL);
+    const messages = buildMessages(
+      trackedMessages,
+      (account as unknown as { liff_id?: string | null }).liff_id ?? null,
+    );
 
     let sent = 0;
     let failed = 0;
@@ -978,12 +982,19 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
 
     for (const friend of friends.results) {
       try {
-        await lineClient.pushMessage(friend.line_user_id, [message]);
+        await lineClient.pushMessage(friend.line_user_id, messages);
         sent++;
-        await c.env.DB.prepare(
-          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, delivery_type, source, created_at)
-           VALUES (?, ?, 'outgoing', ?, ?, NULL, 'test', 'broadcast', ?)`
-        ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, messageContent, now).run();
+        await c.env.DB.batch(createBroadcastMessageLogStatements(
+          c.env.DB,
+          [friend],
+          messages,
+          {
+            broadcastId: null,
+            lineAccountId: accountId,
+            createdAt: now,
+            deliveryType: 'test',
+          },
+        ));
       } catch (err) {
         console.error(`Test send to ${friend.id} failed:`, err);
         failed++;

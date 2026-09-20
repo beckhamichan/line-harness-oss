@@ -6,6 +6,8 @@ const dbMocks = {
   getQueuedBroadcasts: vi.fn(),
   updateBroadcastStatus: vi.fn(),
   updateBroadcastBatchProgress: vi.fn(),
+  getBroadcastMessages: vi.fn(),
+  replaceBroadcastMessages: vi.fn(),
   getBroadcastTargetTagIds: vi.fn(),
   resolveTagBroadcastRecipients: vi.fn(),
   getLineAccountById: vi.fn(),
@@ -60,6 +62,7 @@ describe('processBroadcastSend tag recipients', () => {
     ]);
     dbMocks.getLineAccountById.mockResolvedValue(null);
     dbMocks.getBroadcastById.mockResolvedValue(makeBroadcast());
+    dbMocks.getBroadcastMessages.mockResolvedValue([]);
   });
 
   it('multicasts the shared OR-union once and preserves the account boundary', async () => {

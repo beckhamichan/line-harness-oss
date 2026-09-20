@@ -451,6 +451,67 @@ describe('processMultiAccountDedupBroadcast', () => {
     expect(clients[1].calls).toHaveLength(1);
   });
 
+  it('sends the ordered message array once per batch and logs every message', async () => {
+    const { db, batches } = makeSendDb({
+      selectedCounts: [{ line_account_id: 'acc1', cnt: 1 }],
+      rankedRows: [{ friend_id: 'f1', line_user_id: 'u1', line_account_id: 'acc1' }],
+      accountMeta: [{ id: 'acc1', name: 'A1', country: 'JP' }],
+    });
+    vi.mocked(getLineAccountById).mockResolvedValue({
+      id: 'acc1',
+      channel_access_token: 'tok1',
+      is_active: 1,
+      liff_id: 'LIFF-ACC1',
+    } as never);
+
+    const clients: MockLineClient[] = [];
+    const result = await processMultiAccountDedupBroadcast(
+      db,
+      {
+        id: 'b-multi-message',
+        account_ids: '["acc1"]',
+        dedup_priority: '["acc1"]',
+        message_type: 'text',
+        message_content: 'legacy',
+        messages: [
+          { position: 0, messageType: 'text', messageContent: 'open {{liff_id}}' },
+          {
+            position: 1,
+            messageType: 'image',
+            messageContent: JSON.stringify({
+              originalContentUrl: 'https://example.test/original.jpg',
+              previewImageUrl: 'https://example.test/preview.jpg',
+            }),
+          },
+          {
+            position: 2,
+            messageType: 'flex',
+            messageContent: JSON.stringify({ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [] } }),
+            altText: 'details',
+          },
+        ],
+      },
+      (token) => {
+        const client = new MockLineClient(token);
+        clients.push(client);
+        return client as unknown as LineClient;
+      },
+    );
+
+    expect(result.successCount).toBe(1);
+    expect(clients[0].calls[0].args[1]).toEqual([
+      { type: 'text', text: 'open LIFF-ACC1' },
+      {
+        type: 'image',
+        originalContentUrl: 'https://example.test/original.jpg',
+        previewImageUrl: 'https://example.test/preview.jpg',
+      },
+      expect.objectContaining({ type: 'flex', altText: 'details' }),
+    ]);
+    // One multi-row log statement plus one progress update share the same atomic batch.
+    expect(batches[0]).toHaveLength(2);
+  });
+
   it('one account multicast throws: other succeeds, failedAccountIds = [thrower]', async () => {
     const { db, updates } = makeSendDb({
       selectedCounts: [
