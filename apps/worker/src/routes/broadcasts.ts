@@ -5,11 +5,20 @@ import {
   createBroadcast,
   updateBroadcast,
   deleteBroadcast,
+  getBroadcastMessages,
+  replaceBroadcastMessages,
+  MAX_BROADCAST_MESSAGES,
   getBroadcastTargetTagIds,
   resolveTagBroadcastRecipients,
   BroadcastTargetTagsMissingError,
 } from '@line-crm/db';
-import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
+import type {
+  Broadcast as DbBroadcast,
+  BroadcastMessage,
+  BroadcastMessageInput,
+  BroadcastMessageType,
+  BroadcastTargetType,
+} from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import {
   autoTrackBroadcastMessages,
@@ -48,14 +57,97 @@ function parseJsonArray(s: unknown): string[] | null {
   }
 }
 
-function serializeBroadcast(row: DbBroadcast) {
+type ApiBroadcastMessage = {
+  type: BroadcastMessageType;
+  content: string;
+  altText?: string | null;
+};
+
+function legacyBroadcastMessage(row: DbBroadcast): BroadcastMessageInput {
+  const raw = row as unknown as Record<string, unknown>;
+  return {
+    messageType: row.message_type,
+    messageContent: row.message_content,
+    altText: (raw.alt_text as string | null | undefined) ?? null,
+  };
+}
+
+function validateApiMessages(input: unknown): { messages: BroadcastMessageInput[] } | { error: string } {
+  if (!Array.isArray(input)) {
+    return { error: 'messages must be an array' };
+  }
+  if (input.length < 1 || input.length > MAX_BROADCAST_MESSAGES) {
+    return { error: `messages must contain between 1 and ${MAX_BROADCAST_MESSAGES} items` };
+  }
+
+  const messages: BroadcastMessageInput[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== 'object') {
+      return { error: 'each message must be an object' };
+    }
+    const candidate = item as Record<string, unknown>;
+    if (!['text', 'image', 'flex'].includes(String(candidate.type))) {
+      return { error: 'message type must be text, image, or flex' };
+    }
+    if (typeof candidate.content !== 'string' || !candidate.content.trim()) {
+      return { error: 'message content must be a non-empty string' };
+    }
+    if (
+      candidate.altText !== undefined &&
+      candidate.altText !== null &&
+      typeof candidate.altText !== 'string'
+    ) {
+      return { error: 'message altText must be a string or null' };
+    }
+    messages.push({
+      messageType: candidate.type as BroadcastMessageType,
+      messageContent: candidate.content,
+      altText: (candidate.altText as string | null | undefined) ?? null,
+    });
+  }
+  return { messages };
+}
+
+function toApiMessages(messages: BroadcastMessageInput[]): ApiBroadcastMessage[] {
+  return messages.map((message) => ({
+    type: message.messageType,
+    content: message.messageContent,
+    altText: message.altText ?? null,
+  }));
+}
+
+function fromBroadcastMessageRows(rows: BroadcastMessage[]): BroadcastMessageInput[] {
+  return rows.map((message) => ({
+    messageType: message.message_type,
+    messageContent: message.message_content,
+    altText: message.alt_text,
+  }));
+}
+
+async function loadBroadcastMessages(
+  db: D1Database,
+  row: DbBroadcast,
+): Promise<BroadcastMessageInput[]> {
+  const saved = await getBroadcastMessages(db, row.id);
+  return saved.length > 0 ? fromBroadcastMessageRows(saved) : [legacyBroadcastMessage(row)];
+}
+
+async function serializeBroadcast(
+  db: D1Database,
+  row: DbBroadcast,
+  messageOverride?: BroadcastMessageInput[],
+) {
   const r = row as unknown as Record<string, unknown>;
   const targetTagIds = getBroadcastTargetTagIds(row);
+  const messages = messageOverride ?? await loadBroadcastMessages(db, row);
+  const first = messages[0];
   return {
     id: row.id,
     title: row.title,
-    messageType: row.message_type,
-    messageContent: row.message_content,
+    messageType: first.messageType,
+    messageContent: first.messageContent,
+    altText: first.altText ?? null,
+    messages: toApiMessages(messages),
     targetType: row.target_type,
     targetTagId: row.target_tag_id ?? targetTagIds[0] ?? null,
     targetTagIds,
@@ -115,7 +207,10 @@ broadcasts.get('/api/broadcasts', async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
     const items = await getBroadcasts(c.env.DB, lineAccountId || undefined);
-    return c.json({ success: true, data: items.map(serializeBroadcast) });
+    return c.json({
+      success: true,
+      data: await Promise.all(items.map((item) => serializeBroadcast(c.env.DB, item))),
+    });
   } catch (err) {
     console.error('GET /api/broadcasts error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -132,7 +227,7 @@ broadcasts.get('/api/broadcasts/:id', async (c) => {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
 
-    return c.json({ success: true, data: serializeBroadcast(broadcast) });
+    return c.json({ success: true, data: await serializeBroadcast(c.env.DB, broadcast) });
   } catch (err) {
     console.error('GET /api/broadcasts/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -246,7 +341,8 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', async (c) => {
     // friends.line_account_id にフォールバックする (best-effort、現在のアカウント帰属で集計)。
     const placeholders = accountIds.map(() => '?').join(',');
     const sentRes = await c.env.DB.prepare(
-      `SELECT COALESCE(ml.line_account_id, f.line_account_id) AS account_id, COUNT(*) AS sent
+      `SELECT COALESCE(ml.line_account_id, f.line_account_id) AS account_id,
+              COUNT(DISTINCT ml.friend_id) AS sent
        FROM messages_log ml
        INNER JOIN friends f ON f.id = ml.friend_id
        WHERE ml.broadcast_id = ? AND ml.direction = 'outgoing'
@@ -310,8 +406,9 @@ broadcasts.post('/api/broadcasts', async (c) => {
   try {
     const body = await c.req.json<{
       title: string;
-      messageType: BroadcastMessageType;
-      messageContent: string;
+      messageType?: BroadcastMessageType;
+      messageContent?: string;
+      messages?: ApiBroadcastMessage[];
       targetType: BroadcastTargetType;
       targetTagId?: string | null;
       targetTagIds?: string[];
@@ -322,12 +419,33 @@ broadcasts.post('/api/broadcasts', async (c) => {
       dedupPriority?: string[];
     }>();
 
-    if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
+    if (!body.title || !body.targetType) {
       return c.json(
-        { success: false, error: 'title, messageType, messageContent, and targetType are required' },
+        { success: false, error: 'title and targetType are required' },
         400,
       );
     }
+
+    let normalizedMessages: BroadcastMessageInput[];
+    if (body.messages !== undefined) {
+      const validated = validateApiMessages(body.messages);
+      if ('error' in validated) {
+        return c.json({ success: false, error: validated.error }, 400);
+      }
+      normalizedMessages = validated.messages;
+    } else {
+      const validated = validateApiMessages(body.messageType && body.messageContent
+        ? [{ type: body.messageType, content: body.messageContent, altText: body.altText }]
+        : null);
+      if ('error' in validated) {
+        return c.json({
+          success: false,
+          error: 'messages or messageType/messageContent is required',
+        }, 400);
+      }
+      normalizedMessages = validated.messages;
+    }
+    const firstMessage = normalizedMessages[0];
 
     if (isScheduledAtInQuietHours(body.scheduledAt)) {
       return c.json({ success: false, error: '配信禁止時間帯（JST 23:00〜翌7:00）は予約できません。7:00以降の日時を指定してください。' }, 400);
@@ -356,8 +474,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
 
     const broadcast = await createBroadcast(c.env.DB, {
       title: body.title,
-      messageType: body.messageType,
-      messageContent: body.messageContent,
+      messageType: firstMessage.messageType,
+      messageContent: firstMessage.messageContent,
       targetType: body.targetType,
       targetTagId: body.targetType === 'tag'
         ? targetTagIds!.length === 1 ? targetTagIds![0] : null
@@ -368,18 +486,30 @@ broadcasts.post('/api/broadcasts', async (c) => {
       dedupPriority: body.dedupPriority,
     });
 
-    // Save line_account_id and alt_text if provided
-    const updates: string[] = [];
-    const binds: unknown[] = [];
-    if (body.lineAccountId) { updates.push('line_account_id = ?'); binds.push(body.lineAccountId); }
-    if (body.altText) { updates.push('alt_text = ?'); binds.push(body.altText); }
-    if (updates.length > 0) {
-      binds.push(broadcast.id);
-      await c.env.DB.prepare(`UPDATE broadcasts SET ${updates.join(', ')} WHERE id = ?`)
-        .bind(...binds).run();
+    try {
+      // Save line_account_id if provided. replaceBroadcastMessages mirrors the
+      // first message's type/content/altText to the legacy parent columns.
+      if (body.lineAccountId) {
+        await c.env.DB.prepare(`UPDATE broadcasts SET line_account_id = ? WHERE id = ?`)
+          .bind(body.lineAccountId, broadcast.id).run();
+      }
+      await replaceBroadcastMessages(c.env.DB, broadcast.id, normalizedMessages);
+    } catch (err) {
+      // createBroadcast and replaceBroadcastMessages are separate D1 calls.
+      // Remove the just-created parent if the second stage fails so a 500
+      // response does not leave an invisible half-created draft behind.
+      try {
+        await deleteBroadcast(c.env.DB, broadcast.id);
+      } catch (cleanupErr) {
+        console.error(`Failed to clean up broadcast ${broadcast.id} after create error:`, cleanupErr);
+      }
+      throw err;
     }
 
-    return c.json({ success: true, data: serializeBroadcast(broadcast) }, 201);
+    return c.json({
+      success: true,
+      data: await serializeBroadcast(c.env.DB, broadcast, normalizedMessages),
+    }, 201);
   } catch (err) {
     console.error('POST /api/broadcasts error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -404,6 +534,8 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       title?: string;
       messageType?: BroadcastMessageType;
       messageContent?: string;
+      altText?: string | null;
+      messages?: ApiBroadcastMessage[];
       targetType?: BroadcastTargetType;
       targetTagId?: string | null;
       targetTagIds?: string[];
@@ -412,6 +544,35 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
 
     if (isScheduledAtInQuietHours(body.scheduledAt)) {
       return c.json({ success: false, error: '配信禁止時間帯（JST 23:00〜翌7:00）は予約できません。7:00以降の日時を指定してください。' }, 400);
+    }
+
+    const existingMessages = await loadBroadcastMessages(c.env.DB, existing);
+    const legacyMessageFieldsProvided =
+      'messageType' in body || 'messageContent' in body || 'altText' in body;
+    let normalizedMessages: BroadcastMessageInput[] | undefined;
+    if (body.messages !== undefined) {
+      const validated = validateApiMessages(body.messages);
+      if ('error' in validated) {
+        return c.json({ success: false, error: validated.error }, 400);
+      }
+      normalizedMessages = validated.messages;
+    } else if (legacyMessageFieldsProvided) {
+      if (existingMessages.length >= 2) {
+        return c.json({
+          success: false,
+          error: '複数のメッセージが保存されている配信では、旧フィールドだけで変更できません。messages を指定してください。',
+        }, 400);
+      }
+      const current = existingMessages[0];
+      const validated = validateApiMessages([{
+        type: body.messageType ?? current.messageType,
+        content: body.messageContent ?? current.messageContent,
+        altText: body.altText !== undefined ? body.altText : current.altText,
+      }]);
+      if ('error' in validated) {
+        return c.json({ success: false, error: validated.error }, 400);
+      }
+      normalizedMessages = validated.messages;
     }
 
     // Keep status in sync with scheduledAt changes
@@ -465,13 +626,15 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
 
     const updated = await updateBroadcast(c.env.DB, id, {
       title: body.title,
-      message_type: body.messageType,
-      message_content: body.messageContent,
       target_type: body.targetType,
       ...targetUpdates,
       scheduled_at: body.scheduledAt,
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
     });
+
+    if (normalizedMessages) {
+      await replaceBroadcastMessages(c.env.DB, id, normalizedMessages);
+    }
 
     // 失敗 partial dedup broadcast を draft に戻して編集 → 再送するケースで、
     // 残っていた resume 用 state を全部クリアして fresh campaign として送り直せる
@@ -503,7 +666,12 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       `DELETE FROM broadcast_insights WHERE broadcast_id = ?`,
     ).bind(id).run();
 
-    return c.json({ success: true, data: updated ? serializeBroadcast(updated) : null });
+    return c.json({
+      success: true,
+      data: updated
+        ? await serializeBroadcast(c.env.DB, updated, normalizedMessages ?? existingMessages)
+        : null,
+    });
   } catch (err) {
     console.error('PUT /api/broadcasts/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -625,7 +793,7 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
           return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
         }
         const result = await getBroadcastById(c.env.DB, id);
-        return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
+        return c.json({ success: true, data: result ? await serializeBroadcast(c.env.DB, result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
       }
     }
 
@@ -676,7 +844,7 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
     }
 
     const result = await getBroadcastById(c.env.DB, id);
-    return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
+    return c.json({ success: true, data: result ? await serializeBroadcast(c.env.DB, result) : null });
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send error:', err);
     if (err instanceof DeliveryWindowBlockedError) {
@@ -717,7 +885,7 @@ broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
     }
 
     const result = await getBroadcastById(c.env.DB, id);
-    return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
+    return c.json({ success: true, data: result ? await serializeBroadcast(c.env.DB, result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send-segment error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
