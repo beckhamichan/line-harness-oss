@@ -34,9 +34,17 @@ import type {
   PoolAccount,
 } from '@line-crm/shared'
 
+export type ApiBroadcastMessage = {
+  type: Broadcast['messageType'];
+  content: string;
+  altText: string | null;
+};
+
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   targetType: BroadcastTargetType;
+  messages: ApiBroadcastMessage[];
+  altText: string | null;
   accountIds: string[] | null;
   dedupPriority: string[] | null;
   failedAccountIds: string[] | null;
@@ -306,8 +314,9 @@ export const api = {
       fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}`),
     create: (data: {
       title: string
-      messageType: ApiBroadcast['messageType']
-      messageContent: string
+      messages: ApiBroadcastMessage[]
+      messageType?: ApiBroadcast['messageType']
+      messageContent?: string
       targetType: ApiBroadcast['targetType']
       targetTagId?: string | null
       targetTagIds?: string[]
@@ -325,6 +334,7 @@ export const api = {
       id: string,
       data: {
         title?: string
+        messages?: ApiBroadcastMessage[]
         messageType?: ApiBroadcast['messageType']
         messageContent?: string
         targetType?: ApiBroadcast['targetType']
