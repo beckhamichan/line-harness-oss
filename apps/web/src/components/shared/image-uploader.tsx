@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { api } from '@/lib/api'
+import { api, getApiErrorReason } from '@/lib/api'
+import { compressImageForUpload } from './image-compression'
 
 export type ImageUploaderMode = 'url' | 'line-image'
 
@@ -21,7 +22,7 @@ export interface ImageUploaderProps {
  *
  * mode='url' は単一 URL を返す (Event / Staff など)。
  * mode='line-image' は {originalContentUrl, previewImageUrl} を返す (Broadcast / Auto-reply / Template / Chats)。
- * 初版は preview = original の同 URL。後段で本格 resize が必要になれば worker 側で対応。
+ * preview = original の同 URL。アップロード前にブラウザで JPEG / PNG を 1MB 以下へ圧縮する。
  */
 export default function ImageUploader({ mode, value, onChange, label }: ImageUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -31,26 +32,11 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
 
   const upload = useCallback(
     async (file: File) => {
-      if (!file.type.startsWith('image/')) {
-        setError('画像ファイルのみアップロードできます')
-        return
-      }
-      if (mode === 'line-image' && !['image/jpeg', 'image/png'].includes(file.type)) {
-        setError('LINE 送信用は JPEG または PNG のみ対応')
-        return
-      }
-      if (mode === 'line-image' && file.size > 1024 * 1024) {
-        setError('LINE 送信用は 1MB 以下にしてください (preview サイズ制限)')
-        return
-      }
-      if (file.size > 10 * 1024 * 1024) {
-        setError('10MB 以下にしてください')
-        return
-      }
       setBusy(true)
       setError('')
       try {
-        const res = await api.uploads.image(file)
+        const compressed = await compressImageForUpload(file)
+        const res = await api.uploads.image(compressed)
         if (!res.success) {
           setError(res.error ?? 'アップロード失敗')
           return
@@ -61,8 +47,8 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
         } else {
           onChange({ mode: 'line-image', originalContentUrl: url, previewImageUrl: url })
         }
-      } catch {
-        setError('アップロード失敗')
+      } catch (err) {
+        setError(getApiErrorReason(err) ?? 'アップロード失敗')
       } finally {
         setBusy(false)
       }
@@ -90,7 +76,10 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
     (e: React.ClipboardEvent) => {
       const item = [...e.clipboardData.items].find((i) => i.type.startsWith('image/'))
       const file = item?.getAsFile()
-      if (file) void upload(file)
+      if (file) {
+        e.preventDefault()
+        void upload(file)
+      }
     },
     [upload],
   )
@@ -124,7 +113,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
             const url = e.target.value
             onChange(url ? { mode: 'url', url } : null)
           }}
-          placeholder="https://... (外部 CDN / R2 URL)"
+          placeholder="https://...（公開画像URL）"
           className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
         />
       ) : (
@@ -172,9 +161,12 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
           <input
             ref={inputRef}
             type="file"
-            accept={mode === 'line-image' ? 'image/jpeg,image/png' : 'image/*'}
+            accept="image/jpeg,image/png"
             className="hidden"
-            onChange={(e) => handleFiles(e.target.files)}
+            onChange={(e) => {
+              handleFiles(e.target.files)
+              e.currentTarget.value = ''
+            }}
           />
         </div>
       )}

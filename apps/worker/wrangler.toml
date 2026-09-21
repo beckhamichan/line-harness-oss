@@ -24,6 +24,11 @@ binding = "DB"
 database_name = "line-harness"
 database_id = "abbcd1f2-fcd9-4ee6-98c7-66404b68e9a8"
 
+# 画像アップロード用KV。namespaceは別途作成し、deploy前にIDを置き換える。
+[[kv_namespaces]]
+binding = "IMAGE_UPLOADS"
+id = "YOUR_IMAGE_UPLOADS_KV_NAMESPACE_ID"
+
 # R2 は初回有効化（要支払い方法）が必要なため一時的に無効化。
 # 画像機能を使う際に Cloudflare ダッシュボードで R2 を有効化 → 下記を復活させる。
 # [[r2_buckets]]
@@ -65,6 +70,11 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "line-crm"
 database_id = "YOUR_D1_DATABASE_ID"
+
+# 画像アップロード用KV。namespaceは別途作成し、deploy前にIDを置き換える。
+[[env.production.kv_namespaces]]
+binding = "IMAGE_UPLOADS"
+id = "YOUR_IMAGE_UPLOADS_KV_NAMESPACE_ID"
 
 [[env.production.r2_buckets]]
 binding = "IMAGES"
