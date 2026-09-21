@@ -3,6 +3,14 @@ import type { Env } from '../index.js';
 
 const images = new Hono<Env>();
 
+const MAX_IMAGE_BYTES = 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg'] as const;
+
+type ImageMetadata = {
+  contentType: string;
+  originalFilename: string;
+};
+
 // POST /api/images — upload image (base64 or binary)
 images.post('/api/images', async (c) => {
   try {
@@ -41,22 +49,27 @@ images.post('/api/images', async (c) => {
       mimeType = contentType.split(';')[0] || 'image/png';
     }
 
-    if (data.byteLength > 10 * 1024 * 1024) {
-      return c.json({ success: false, error: 'Image too large (max 10MB)' }, 400);
+    if (data.byteLength > MAX_IMAGE_BYTES) {
+      return c.json({ success: false, error: '画像は1MB以下に圧縮してからアップロードしてください' }, 400);
     }
 
-    const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-    if (!allowedTypes.includes(mimeType)) {
-      return c.json({ success: false, error: `Unsupported image type: ${mimeType}. Allowed: ${allowedTypes.join(', ')}` }, 400);
+    if (!ALLOWED_IMAGE_TYPES.includes(mimeType as typeof ALLOWED_IMAGE_TYPES[number])) {
+      return c.json({ success: false, error: `JPEGまたはPNGのみアップロードできます（受信形式: ${mimeType}）` }, 400);
     }
 
     const ext = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1];
     const id = crypto.randomUUID();
     const key = `${id}.${ext}`;
 
-    await c.env.IMAGES.put(key, data, {
-      httpMetadata: { contentType: mimeType },
-      customMetadata: { originalFilename: filename ?? key },
+    if (!c.env.IMAGE_UPLOADS) {
+      return c.json({ success: false, error: '画像保存用KVが設定されていません' }, 503);
+    }
+
+    await c.env.IMAGE_UPLOADS.put(key, data, {
+      metadata: {
+        contentType: mimeType,
+        originalFilename: filename ?? key,
+      } satisfies ImageMetadata,
     });
 
     const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
@@ -68,36 +81,48 @@ images.post('/api/images', async (c) => {
     }, 201);
   } catch (err) {
     console.error('POST /api/images error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    return c.json({ success: false, error: '画像の保存に失敗しました' }, 500);
   }
 });
 
 // GET /images/:key — serve image (public, no auth)
 images.get('/images/:key', async (c) => {
-  const key = c.req.param('key');
-  const object = await c.env.IMAGES.get(key);
+  try {
+    if (!c.env.IMAGE_UPLOADS) {
+      return c.json({ success: false, error: '画像保存用KVが設定されていません' }, 503);
+    }
 
-  if (!object) {
-    return c.json({ success: false, error: 'Image not found' }, 404);
+    const key = c.req.param('key');
+    const object = await c.env.IMAGE_UPLOADS.getWithMetadata<ImageMetadata>(key, 'arrayBuffer');
+
+    if (!object.value) {
+      return c.json({ success: false, error: 'Image not found' }, 404);
+    }
+
+    const headers = new Headers();
+    headers.set('Content-Type', object.metadata?.contentType || 'image/png');
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    headers.set('ETag', `"${key}"`);
+
+    return new Response(object.value, { headers });
+  } catch (err) {
+    console.error('GET /images/:key error:', err);
+    return c.json({ success: false, error: '画像の読み込みに失敗しました' }, 500);
   }
-
-  const headers = new Headers();
-  headers.set('Content-Type', object.httpMetadata?.contentType || 'image/png');
-  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-  headers.set('ETag', object.etag);
-
-  return new Response(object.body, { headers });
 });
 
 // DELETE /api/images/:key — delete image
 images.delete('/api/images/:key', async (c) => {
   try {
     const key = c.req.param('key');
-    await c.env.IMAGES.delete(key);
+    if (!c.env.IMAGE_UPLOADS) {
+      return c.json({ success: false, error: '画像保存用KVが設定されていません' }, 503);
+    }
+    await c.env.IMAGE_UPLOADS.delete(key);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/images/:key error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    return c.json({ success: false, error: '画像の削除に失敗しました' }, 500);
   }
 });
 

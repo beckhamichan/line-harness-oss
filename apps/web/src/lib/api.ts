@@ -1267,7 +1267,7 @@ export const api = {
   uploads: {
     /**
      * 既存 /api/images エンドポイントを叩いて画像をアップロードする。
-     * 10MB 超 / image/* 以外は 400 で返る。
+     * 1MB 超 / JPEG・PNG 以外は 400 で返る。
      */
     image: async (file: File): Promise<ApiResponse<{ id: string; key: string; url: string; mimeType: string; size: number }>> => {
       const buf = await file.arrayBuffer()
