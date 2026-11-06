@@ -86,9 +86,23 @@ export default function InboxPage() {
   }, [])
 
   useEffect(() => {
-    loadAll()
-    const id = setInterval(loadAll, POLL_INTERVAL_MS)
-    return () => clearInterval(id)
+    let id: ReturnType<typeof setInterval> | undefined
+    const syncVisibility = () => {
+      clearInterval(id)
+      id = undefined
+      if (document.visibilityState !== 'visible') return
+      void loadAll()
+      id = setInterval(() => {
+        if (document.visibilityState === 'visible') void loadAll()
+      }, POLL_INTERVAL_MS)
+    }
+    document.addEventListener('visibilitychange', syncVisibility)
+    syncVisibility()
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', syncVisibility)
+      requestSeqRef.current++
+    }
   }, [loadAll])
 
   // ── client-side filter ──

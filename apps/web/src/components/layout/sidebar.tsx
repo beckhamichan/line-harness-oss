@@ -212,17 +212,29 @@ export default function Sidebar() {
     const fetchCount = async () => {
       try {
         const { api } = await import('@/lib/api')
+        if (cancelled || document.visibilityState !== 'visible') return
         const res = await api.inbox.unanswered.count()
         if (!cancelled && res.success) setUnansweredCount(res.data.total)
       } catch {
         // サイレント失敗
       }
     }
-    fetchCount()
-    const id = setInterval(fetchCount, 5 * 60_000)
+    let id: ReturnType<typeof setInterval> | undefined
+    const syncVisibility = () => {
+      clearInterval(id)
+      id = undefined
+      if (document.visibilityState !== 'visible') return
+      void fetchCount()
+      id = setInterval(() => {
+        if (document.visibilityState === 'visible') void fetchCount()
+      }, 5 * 60_000)
+    }
+    document.addEventListener('visibilitychange', syncVisibility)
+    syncVisibility()
     return () => {
       cancelled = true
       clearInterval(id)
+      document.removeEventListener('visibilitychange', syncVisibility)
     }
   }, [])
 

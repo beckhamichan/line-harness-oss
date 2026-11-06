@@ -67,8 +67,8 @@ function stubDB(canned: {
   return {
     prepare(sql: string) {
       const isAutoReplies = sql.includes('FROM auto_replies');
-      // 候補 friend クエリ (CANDIDATES_SQL): "FROM friends f" を含み、JOIN agg
-      const isCandidates = sql.includes('FROM friends f') && sql.includes('JOIN agg');
+      // 候補 friend クエリ (CANDIDATES_SQL): agg CTEで識別する
+      const isCandidates = sql.includes('WITH agg AS');
       // auto_reply outgoing クエリ: source='auto_reply' を WHERE に含む
       const isAutoReplyOutgoings =
         sql.includes("source='auto_reply'") && sql.includes('outgoing');
