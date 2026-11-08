@@ -209,10 +209,14 @@ export default function Sidebar() {
   const [unansweredCount, setUnansweredCount] = useState<number>(0)
   useEffect(() => {
     let cancelled = false
+    let lastFetchStartedAt: number | null = null
     const fetchCount = async () => {
       try {
         const { api } = await import('@/lib/api')
         if (cancelled || document.visibilityState !== 'visible') return
+        // import 待ち中に復帰イベントが重なっても、取得開始から1分は再取得しない。
+        if (lastFetchStartedAt !== null && Date.now() - lastFetchStartedAt < 60_000) return
+        lastFetchStartedAt = Date.now()
         const res = await api.inbox.unanswered.count()
         if (!cancelled && res.success) setUnansweredCount(res.data.total)
       } catch {
@@ -224,7 +228,9 @@ export default function Sidebar() {
       clearInterval(id)
       id = undefined
       if (document.visibilityState !== 'visible') return
-      void fetchCount()
+      if (lastFetchStartedAt === null || Date.now() - lastFetchStartedAt >= 60_000) {
+        void fetchCount()
+      }
       id = setInterval(() => {
         if (document.visibilityState === 'visible') void fetchCount()
       }, 5 * 60_000)
