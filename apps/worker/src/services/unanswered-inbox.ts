@@ -74,79 +74,66 @@ function consumeAutoReplyEvidence(
 // 候補 friend のメタデータ + 集約タイムスタンプ。
 // プレビュー/タイプは別クエリで last_manual 以降の incoming 群から JS で決める
 // (auto_reply マッチを除いた「最新の非マッチ incoming」が triage 対象)。
-const CANDIDATES_SQL = `
-  WITH agg AS (
-    SELECT
-      friend_id,
-      MAX(CASE WHEN direction='incoming' AND (source IS NULL OR source != 'postback') THEN created_at END) AS last_incoming,
-      MAX(CASE WHEN direction='outgoing' AND source='manual' THEN created_at END) AS last_manual,
-      MAX(CASE WHEN direction='outgoing' AND source IN
-          ('auto_reply','automation','automation_backfill','scenario','broadcast')
-        THEN created_at END) AS last_machine
-    FROM messages_log
-    GROUP BY friend_id
+// MAX を friend/direction の索引検索にする。期間の足切りはしない。
+// MATERIALIZED により候補判定で最終時刻を再計算しない。
+const CANDIDATES_SQL = (includeMachine: boolean) => `
+  WITH agg AS MATERIALIZED (
+    SELECT f.id AS friend_id, f.display_name, f.picture_url, f.line_account_id,
+      COALESCE(la.name, '(未分類)') AS account_name,
+      (SELECT MAX(created_at) FROM messages_log
+       WHERE friend_id=f.id AND direction='incoming'
+         AND (source IS NULL OR source != 'postback')) AS last_incoming,
+      (SELECT MAX(created_at) FROM messages_log INDEXED BY idx_messages_log_friend_source
+       WHERE friend_id=f.id AND direction='outgoing' AND source='manual') AS last_manual
+    FROM friends f
+    LEFT JOIN line_accounts la ON la.id = f.line_account_id
+    WHERE f.is_following = 1 AND (la.id IS NULL OR la.is_active = 1)
   )
-  SELECT
-    f.id            AS friend_id,
-    f.display_name,
-    f.picture_url,
-    f.line_account_id,
-    COALESCE(la.name, '(未分類)') AS account_name,
-    agg.last_incoming,
-    agg.last_manual,
-    agg.last_machine
-  FROM friends f
-  LEFT JOIN line_accounts la ON la.id = f.line_account_id
-  JOIN agg ON agg.friend_id = f.id
-  WHERE f.is_following = 1
-    AND (la.id IS NULL OR la.is_active = 1)
-    AND agg.last_incoming IS NOT NULL
-    AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)
-  ORDER BY agg.last_incoming ASC
+  SELECT agg.*,
+    ${includeMachine ? `(SELECT MAX(created_at) FROM messages_log
+     WHERE friend_id=agg.friend_id AND direction='outgoing'
+       AND source IN ('auto_reply','automation','automation_backfill','scenario','broadcast'))` : 'NULL'} AS last_machine
+  FROM agg
+  WHERE last_incoming IS NOT NULL
+    AND (last_manual IS NULL OR last_manual < last_incoming)
+  ORDER BY last_incoming ASC, friend_id ASC
 `;
 
-// 候補 friend の "last_manual 以降の全 incoming" (postback 除く)。
-// 当初は friend_id IN (?, ...) で candidate scope する設計だったが、
-// D1 の prepared statement bind 変数上限 (100) を IN×2 で越えて 500 が出た
-// (本番事故 2026-05-08)。代わりに last_manual を全 friend で集約する CTE に
-// して bind 変数ゼロで動かす。messages_log は (friend_id, direction, created_at)
-// の index で scan されるので、incoming サブセット取得は十分速い。
+// 旧SQLの昇順索引走査＋ソートと同じく、同時刻はrowid昇順を保つ。
+// 候補ごとの索引検索を UNION ALL する。manual がある場合のみ時刻条件を付け、
+// OR によって created_at の範囲検索が失われることを避ける。
 const RECENT_INCOMINGS_SQL = `
-  WITH last_manual AS (
-    SELECT friend_id, MAX(created_at) AS lm
-    FROM messages_log
-    WHERE direction='outgoing' AND source='manual'
-    GROUP BY friend_id
-  )
-  SELECT ml.friend_id, ml.message_type, ml.content, ml.created_at
-  FROM messages_log ml
-  LEFT JOIN last_manual lm ON lm.friend_id = ml.friend_id
-  WHERE ml.direction='incoming'
+  SELECT ml.friend_id AS friend_id, ml.message_type, ml.content, ml.created_at, ml.rowid AS _tie_order
+  FROM last_manual lm CROSS JOIN messages_log ml
+  WHERE ml.friend_id=lm.friend_id AND ml.direction='incoming'
     AND (ml.source IS NULL OR ml.source != 'postback')
-    AND (lm.lm IS NULL OR ml.created_at > lm.lm)
-  ORDER BY ml.friend_id, ml.created_at DESC
+`;
+const RECENT_AUTO_REPLY_OUTGOINGS_SQL = `
+  SELECT ml.friend_id AS friend_id, ml.created_at, ml.rowid AS _tie_order
+  FROM last_manual lm CROSS JOIN messages_log ml
+  WHERE ml.friend_id=lm.friend_id AND ml.direction='outgoing'
+    AND ml.source='auto_reply' AND ml.delivery_type='reply'
 `;
 
-// 候補 friend の "last_manual 以降の auto_reply outgoing (reply 限定)"。
-// delivery_type='reply' で絞ることで、forms.ts などが同じ source='auto_reply' で
-// 記録する form-confirmation / webhook-failure push を証拠から除外する。
-// 同じく bind 変数ゼロ。JS 側で friend_id ごとに group する。
-const RECENT_AUTO_REPLY_OUTGOINGS_SQL = `
-  WITH last_manual AS (
-    SELECT friend_id, MAX(created_at) AS lm
-    FROM messages_log
-    WHERE direction='outgoing' AND source='manual'
-    GROUP BY friend_id
-  )
-  SELECT ml.friend_id, ml.created_at
-  FROM messages_log ml
-  LEFT JOIN last_manual lm ON lm.friend_id = ml.friend_id
-  WHERE ml.direction='outgoing'
-    AND ml.source='auto_reply'
-    AND ml.delivery_type='reply'
-    AND (lm.lm IS NULL OR ml.created_at > lm.lm)
-  ORDER BY ml.friend_id, ml.created_at ASC
-`;
+// JSON配列を1 bindで渡す。候補が100人を超えても変数上限や分割クエリ増に依存しない。
+function prepareCandidateHistory(
+  db: D1Database, sql: string, candidates: RawCandidateRow[], order: 'ASC' | 'DESC',
+): D1PreparedStatement {
+  // 候補取得後に手動返信が入る場合も、旧SQLと同様に各履歴SQLの時点で再確認。
+  // 手動返信なし/ありを分け、後者ではcreated_atの範囲検索を使う。
+  return db.prepare(`
+    WITH last_manual AS MATERIALIZED (
+      SELECT scope.value AS friend_id,
+        (SELECT MAX(created_at) FROM messages_log INDEXED BY idx_messages_log_friend_source
+         WHERE friend_id=scope.value AND direction='outgoing' AND source='manual') AS lm
+      FROM json_each(?) AS scope
+    )
+    ${sql} AND lm.lm IS NULL
+    UNION ALL
+    ${sql} AND lm.lm IS NOT NULL AND ml.created_at > lm.lm
+    ORDER BY friend_id, created_at ${order}, _tie_order ASC
+  `).bind(JSON.stringify(candidates.map((c) => c.friend_id)));
+}
 
 
 export interface UnansweredRow {
@@ -230,26 +217,28 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
  * 4. JS で各 incoming を判定: 応答あり証拠 OR silent ルール match で「マッチ済」、
  *    マッチしない最新の incoming を preview として採用。全部マッチした thread のみ除外。
  */
-async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
-  const candidatesResult = await db.prepare(CANDIDATES_SQL).all<RawCandidateRow>();
+async function getAllUnansweredRows(db: D1Database, includeMachine = true): Promise<UnansweredRow[]> {
+  const candidatesResult = await db.prepare(CANDIDATES_SQL(includeMachine)).all<RawCandidateRow>();
   const candidates = candidatesResult.results ?? [];
   if (candidates.length === 0) return [];
 
-  // 候補 friend のみを残すための Set。後段の JS group で他の friend は無視する。
+  // SQLでも候補に限定する。Setはgroup時の防御として残す。
   const candidateIds = new Set(candidates.map((c) => c.friend_id));
 
-  const [incomingsResult, autoReplyOutgoingsResult, activeRulesResult] = await Promise.all([
-    db.prepare(RECENT_INCOMINGS_SQL).all<RawIncomingRow>(),
-    db.prepare(RECENT_AUTO_REPLY_OUTGOINGS_SQL).all<{ friend_id: string; created_at: string }>(),
+  const [incomingsResult, outgoingsResult, rulesResult] = await Promise.all([
+    prepareCandidateHistory(db, RECENT_INCOMINGS_SQL, candidates, 'DESC').all<RawIncomingRow>(),
+    prepareCandidateHistory(db, RECENT_AUTO_REPLY_OUTGOINGS_SQL, candidates, 'ASC')
+      .all<{ friend_id: string; created_at: string }>(),
     db.prepare(ACTIVE_AUTO_REPLIES_SQL).all<ActiveRuleRow>(),
   ]);
-
-  const activeRules = activeRulesResult.results ?? [];
+  const incomingRows = incomingsResult.results ?? [];
+  const outgoingRows = outgoingsResult.results ?? [];
+  const activeRules = rulesResult.results ?? [];
 
   // friend_id ごとに incomings を集める (created_at DESC でソート済み)。
   // 候補外の friend のメッセは捨てる (memory 節約)。
   const incomingsByFriend = new Map<string, RawIncomingRow[]>();
-  for (const row of incomingsResult.results ?? []) {
+  for (const row of incomingRows) {
     if (!candidateIds.has(row.friend_id)) continue;
     const list = incomingsByFriend.get(row.friend_id) ?? [];
     list.push(row);
@@ -257,7 +246,7 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
   }
   // friend_id ごとに auto_reply outgoings を集める (created_at ASC ソート済み)。
   const autoReplyOutgoingsByFriend = new Map<string, { created_at: string }[]>();
-  for (const row of autoReplyOutgoingsResult.results ?? []) {
+  for (const row of outgoingRows) {
     if (!candidateIds.has(row.friend_id)) continue;
     const list = autoReplyOutgoingsByFriend.get(row.friend_id) ?? [];
     list.push({ created_at: row.created_at });
@@ -332,7 +321,9 @@ export async function getUnansweredFriendIds(db: D1Database): Promise<Set<string
 }
 
 export async function countUnanswered(db: D1Database): Promise<UnansweredCount> {
-  const allRows = await getAllUnansweredRows(db);
+  // 自動応答の1対1消費と最古待ち時間には全候補の判定が必要。
+  // 件数に不要な last_machine の履歴検索だけを省く。キャッシュで鮮度を変えない。
+  const allRows = await getAllUnansweredRows(db, false);
 
   const byAccountMap = new Map<string, { accountName: string; count: number }>();
   let oldest: string | null = null;

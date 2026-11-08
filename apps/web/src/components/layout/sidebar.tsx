@@ -209,20 +209,38 @@ export default function Sidebar() {
   const [unansweredCount, setUnansweredCount] = useState<number>(0)
   useEffect(() => {
     let cancelled = false
+    let lastFetchStartedAt: number | null = null
     const fetchCount = async () => {
       try {
         const { api } = await import('@/lib/api')
+        if (cancelled || document.visibilityState !== 'visible') return
+        // import 待ち中に復帰イベントが重なっても、取得開始から1分は再取得しない。
+        if (lastFetchStartedAt !== null && Date.now() - lastFetchStartedAt < 60_000) return
+        lastFetchStartedAt = Date.now()
         const res = await api.inbox.unanswered.count()
         if (!cancelled && res.success) setUnansweredCount(res.data.total)
       } catch {
         // サイレント失敗
       }
     }
-    fetchCount()
-    const id = setInterval(fetchCount, 5 * 60_000)
+    let id: ReturnType<typeof setInterval> | undefined
+    const syncVisibility = () => {
+      clearInterval(id)
+      id = undefined
+      if (document.visibilityState !== 'visible') return
+      if (lastFetchStartedAt === null || Date.now() - lastFetchStartedAt >= 60_000) {
+        void fetchCount()
+      }
+      id = setInterval(() => {
+        if (document.visibilityState === 'visible') void fetchCount()
+      }, 5 * 60_000)
+    }
+    document.addEventListener('visibilitychange', syncVisibility)
+    syncVisibility()
     return () => {
       cancelled = true
       clearInterval(id)
+      document.removeEventListener('visibilitychange', syncVisibility)
     }
   }, [])
 

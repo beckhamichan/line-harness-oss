@@ -9,7 +9,7 @@ import { api } from '@/lib/api'
 import type { InboxRowData } from '@/components/inbox/inbox-row'
 
 const PAGE_SIZE = 50
-const POLL_INTERVAL_MS = 30_000
+const POLL_INTERVAL_MS = 5 * 60_000
 // 全件 fetch の上限。worker 側 MAX_PAGE_SIZE と一致させる。222 件規模で
 // 余裕を持って 1〜2 年の運用カバー。これを超えるとサマリーに警告を出す
 // (Codex Round 1 指摘: サイレント切り捨て防止)。
@@ -37,6 +37,7 @@ export default function InboxPage() {
   // 重複 polling で古いレスポンスが新しいデータを上書きしないように世代管理
   // (Codex Round 1 指摘: race condition)。
   const requestSeqRef = useRef(0)
+  const lastFetchStartedAtRef = useRef<number | null>(null)
 
   // 検索/account/overdue を変えたらページを1に戻す
   useEffect(() => {
@@ -58,6 +59,7 @@ export default function InboxPage() {
   }, [])
 
   const loadAll = useCallback(async () => {
+    lastFetchStartedAtRef.current = Date.now()
     const seq = ++requestSeqRef.current
     setLoading(true)
     setError('')
@@ -86,9 +88,28 @@ export default function InboxPage() {
   }, [])
 
   useEffect(() => {
-    loadAll()
-    const id = setInterval(loadAll, POLL_INTERVAL_MS)
-    return () => clearInterval(id)
+    let id: ReturnType<typeof setInterval> | undefined
+    let initial = true
+    const syncVisibility = () => {
+      clearInterval(id)
+      id = undefined
+      if (document.visibilityState !== 'visible') return
+      // 初回は必ず取得し、短時間のタブ復帰では定期タイマーだけ再開する。
+      if (initial || lastFetchStartedAtRef.current === null || Date.now() - lastFetchStartedAtRef.current >= 60_000) {
+        void loadAll()
+      }
+      initial = false
+      id = setInterval(() => {
+        if (document.visibilityState === 'visible') void loadAll()
+      }, POLL_INTERVAL_MS)
+    }
+    document.addEventListener('visibilitychange', syncVisibility)
+    syncVisibility()
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', syncVisibility)
+      requestSeqRef.current++
+    }
   }, [loadAll])
 
   // ── client-side filter ──
